@@ -29,6 +29,12 @@ struct RoomPlaylist: Identifiable, Codable, Equatable {
         videos.append(item)
     }
 
+    func appending(_ additions: [ChannelVideo], durations: [String: Int] = [:]) -> RoomPlaylist {
+        var draft = self
+        for video in additions { draft.append(video, seconds: durations[video.id]) }
+        return draft
+    }
+
     mutating func remove(_ video: ChannelVideo) {
         videos.removeAll { $0.id == video.id }
     }

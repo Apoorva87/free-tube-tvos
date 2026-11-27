@@ -6,6 +6,61 @@ final class RoomAIValidationTests: XCTestCase {
     private let b = ChannelVideo(id: "22222222222", title: "Cache design", channelID: "two", channelTitle: "Engineer", thumbnail: nil)
     private let c = ChannelVideo(id: "33333333333", title: "A worked example", channelID: "three", channelTitle: "Lab", thumbnail: nil)
 
+    func testWebResearchSerializationContainsOnlyTheApprovedTopic() throws {
+        let ref = AIPlaylistReference(id: UUID().uuidString, title: "Private playlist")
+        let privateCue = AICue(index: 1, start: 0, end: 2, text: "Private captions")
+        let candidate = AICandidate(id: a.id, title: a.title, channel: a.channelTitle, durationSeconds: 15)
+        let request = AIRequest(kind: .research, prompt: "lunar science", videoID: a.id,
+                                candidates: [candidate], cues: [privateCue], playlists: [ref])
+        let data = try JSONEncoder().encode(request)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
+        XCTAssertEqual(object, ["kind": "research", "prompt": "lunar science"])
+        XCTAssertEqual(try JSONDecoder().decode(AIRequest.self, from: data).cues.count, 0)
+        let assist = AIRequest(kind: .assist, prompt: "Add videos", videoID: a.id, candidates: [candidate], cues: [privateCue], playlists: [ref])
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(assist)) as? [String: Any])
+        XCTAssertEqual(Set(fields.keys), ["kind", "prompt", "playlists"])
+        let sent = try XCTUnwrap((fields["playlists"] as? [[String: String]])?.first)
+        XCTAssertEqual(sent, ["id": ref.id, "title": ref.title])
+    }
+
+    func testAssistantCanOnlySelectTargetsFromThisRequest() throws {
+        let ref = AIPlaylistReference(id: UUID().uuidString, title: "Physics")
+        let valid = AIProposal(action: "append", queries: ["gravitational waves"], targetID: ref.id, research: true)
+        let plan = try RoomAIValidation.assist(valid, references: [ref])
+        XCTAssertEqual(plan.targetID, UUID(uuidString: ref.id))
+        XCTAssertTrue(plan.research)
+        XCTAssertThrowsError(try RoomAIValidation.assist(valid, references: []))
+        XCTAssertNil(try RoomAIValidation.assist(.init(action: "append", queries: ["space"]), references: [ref]).targetID)
+        XCTAssertThrowsError(try RoomAIValidation.assist(.init(action: "find", queries: ["space"], targetID: ref.id), references: [ref]))
+        XCTAssertThrowsError(try RoomAIValidation.assist(.init(action: "find", queries: ["Mars", "mars"]), references: []))
+        XCTAssertThrowsError(try RoomAIValidation.assist(.init(action: "answer", message: "Mars", research: true), references: []))
+        XCTAssertEqual(try RoomAIValidation.assist(.init(action: "answer", message: "First.\nSecond."), references: []).message,
+                       "First.\nSecond.")
+    }
+
+    func testPublicTopicAndResearchSourcesAreValidated() throws {
+        let topic = try RoomAIValidation.publicTopic(from: ["lunar geology", "lunar ice"])
+        XCTAssertEqual(topic, "lunar geology\nlunar ice")
+        XCTAssertThrowsError(try RoomAIValidation.publicTopic(from: [UUID().uuidString]))
+        XCTAssertThrowsError(try RoomAIValidation.publicTopic(from: ["me@example.com"]))
+        let result = AIProposal(message: "Lunar ice is concentrated near the poles.", queries: ["polar ice"],
+                                sources: ["https://science.nasa.gov/moon/"])
+        XCTAssertEqual(try RoomAIValidation.findings(result, topic: topic).sources.first?.host, "science.nasa.gov")
+        for invalid in ["http://science.nasa.gov/", "https://user:secret@example.org/", "https://127.0.0.1/", "file:///tmp/file"] {
+            var changed = result
+            changed.sources = [invalid]
+            XCTAssertThrowsError(try RoomAIValidation.findings(changed, topic: topic))
+        }
+    }
+
+    func testMultiQueryCandidatesAreDeduplicatedBeforeRankingAndExcludeSavedVideos() {
+        let first = RoomAskMatches(videos: [a, b], durations: [a.id: 8, b.id: 12])
+        let second = RoomAskMatches(videos: [a, c], durations: [c.id: 32])
+        let combined = RoomAskMatches.combined([first, second], excluding: [b.id], limit: 2)
+        XCTAssertEqual(combined.candidates.map(\.id), [a.id, c.id])
+        XCTAssertEqual(combined.durations, [a.id: 8, c.id: 32])
+    }
+
     func testOnlyReturnedSearchResultsCanEnterThePlaylist() throws {
         XCTAssertEqual(try RoomAIValidation.resolve([], in: [a,b]), [])
         XCTAssertEqual(try RoomAIValidation.resolve([a.id, a.id, b.id], in: [a,b]), [a,b])

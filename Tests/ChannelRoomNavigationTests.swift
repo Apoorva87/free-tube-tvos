@@ -20,8 +20,13 @@ final class ChannelRoomNavigationTests: XCTestCase {
         XCTAssertTrue(create.waitForExistence(timeout: 6))
         remote.press(.menu)
         selectWithRemote(app.buttons["nav-assistant"], in: app)
+        let send = app.buttons["assistant-send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 6))
+        XCTAssertTrue(app.textFields["assistant-prompt"].exists)
+        XCTAssertTrue(app.buttons["assistant-research"].exists)
+        XCTAssertFalse(send.isEnabled)
         let find = app.buttons["Find videos"]
-        XCTAssertTrue(find.waitForExistence(timeout: 6))
+        XCTAssertTrue(find.exists)
         XCTAssertTrue(app.buttons["Build playlist"].exists)
         XCTAssertFalse(find.isEnabled)
         remote.press(.menu)
@@ -29,8 +34,10 @@ final class ChannelRoomNavigationTests: XCTestCase {
         let ask = app.buttons["search-ask-ai"]
         XCTAssertTrue(ask.waitForExistence(timeout: 6))
         selectWithRemote(ask, in: app)
-        XCTAssertTrue(app.buttons["Build playlist"].waitForExistence(timeout: 8))
-        XCTAssertFalse(app.buttons["Build playlist"].isEnabled)
+        XCTAssertTrue(send.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.textFields["assistant-prompt"].exists)
+        XCTAssertFalse(send.isEnabled)
+        XCTAssertTrue(app.buttons["Build playlist"].exists)
         XCTAssertTrue(app.buttons["Done"].exists)
     }
 

@@ -15,22 +15,80 @@ struct AICue: Codable, Sendable, Hashable, Identifiable {
     var id: Int { index }
 }
 
+struct AIPlaylistReference: Codable, Sendable, Equatable {
+    let id: String
+    let title: String
+}
+
 struct AIRequest: Codable, Sendable {
-    enum Kind: String, Codable, Sendable { case query, playlist, summary, jump, followup }
+    enum Kind: String, Codable, Sendable { case query, playlist, summary, jump, followup, assist, research }
     let kind: Kind
     let prompt: String
     var videoID: String? = nil
     var candidates: [AICandidate] = []
     var cues: [AICue] = []
+    var playlists: [AIPlaylistReference]? = nil
+}
+
+extension AIRequest {
+    private enum CodingKeys: String, CodingKey { case kind, prompt, videoID, candidates, cues, playlists }
+
+    func encode(to encoder: Encoder) throws {
+        var data = encoder.container(keyedBy: CodingKeys.self)
+        try data.encode(kind, forKey: .kind)
+        try data.encode(prompt, forKey: .prompt)
+        // A web-enabled request can serialize only its approved public topic.
+        guard kind != .research else { return }
+        if kind == .assist {
+            try data.encodeIfPresent(playlists, forKey: .playlists)
+            return
+        }
+        try data.encodeIfPresent(videoID, forKey: .videoID)
+        try data.encode(candidates, forKey: .candidates)
+        try data.encode(cues, forKey: .cues)
+    }
+
+    init(from decoder: Decoder) throws {
+        let data = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try data.decode(Kind.self, forKey: .kind)
+        prompt = try data.decode(String.self, forKey: .prompt)
+        videoID = try data.decodeIfPresent(String.self, forKey: .videoID)
+        candidates = try data.decodeIfPresent([AICandidate].self, forKey: .candidates) ?? []
+        cues = try data.decodeIfPresent([AICue].self, forKey: .cues) ?? []
+        playlists = try data.decodeIfPresent([AIPlaylistReference].self, forKey: .playlists)
+    }
 }
 
 struct AIProposal: Codable, Sendable {
     struct Point: Codable, Sendable { let text: String; let cueIndex: Int }
+    var action: String? = nil
+    var message: String? = nil
+    var queries: [String]? = nil
+    var targetID: String? = nil
+    var research: Bool? = nil
+    var sources: [String]? = nil
     var query: String? = nil
     var title: String? = nil
     var videoIDs: [String]? = nil
     var points: [Point]? = nil
     var cueIndex: Int? = nil
+}
+
+struct RoomAssistPlan {
+    enum Action: String { case answer, find, create, append }
+    let action: Action
+    let message: String?
+    let queries: [String]
+    let title: String?
+    let targetID: UUID?
+    let research: Bool
+}
+
+struct RoomWebFindings {
+    let topic: String
+    let message: String
+    let queries: [String]
+    let sources: [URL]
 }
 
 enum RoomAIError: Error, LocalizedError {
@@ -58,6 +116,72 @@ enum RoomAIValidation {
               !value.isEmpty, value.utf8.count <= maxBytes,
               !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
         return value
+    }
+
+    private static func message(_ raw: String?) throws -> String? {
+        guard let raw else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, raw.utf8.count <= 2000,
+              raw.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) || "\n\t\r".unicodeScalars.contains($0) })
+        else { throw RoomAIError.invalidProposal }
+        return value
+    }
+
+    private static func terms(_ raw: [String]?) throws -> [String] {
+        guard let raw else { return [] }
+        guard (1...3).contains(raw.count) else { throw RoomAIError.invalidProposal }
+        var seen = Set<String>()
+        return try raw.map {
+            guard let value = text($0, maxBytes: 180), seen.insert(value.lowercased()).inserted else { throw RoomAIError.invalidProposal }
+            return value
+        }
+    }
+
+    static func assist(_ proposal: AIProposal, references: [AIPlaylistReference]) throws -> RoomAssistPlan {
+        guard let action = proposal.action.flatMap(RoomAssistPlan.Action.init(rawValue:)),
+              proposal.sources == nil, proposal.videoIDs == nil, proposal.query == nil,
+              proposal.points == nil, proposal.cueIndex == nil else { throw RoomAIError.invalidProposal }
+        let message = try message(proposal.message)
+        let queries = try terms(proposal.queries)
+        let research = proposal.research ?? false
+        guard action != .answer || message != nil,
+              (action == .answer && !research) || !queries.isEmpty else { throw RoomAIError.invalidProposal }
+        let title = text(proposal.title, maxBytes: 180)
+        guard proposal.title == nil || (action == .create && title != nil) else { throw RoomAIError.invalidProposal }
+        var targetID: UUID?
+        if let raw = proposal.targetID {
+            guard action == .append, let uuid = UUID(uuidString: raw),
+                  references.contains(where: { UUID(uuidString: $0.id) == uuid }) else { throw RoomAIError.invalidProposal }
+            targetID = uuid
+        }
+        return RoomAssistPlan(action: action, message: message, queries: queries, title: title, targetID: targetID, research: research)
+    }
+
+    static func publicTopic(from queries: [String]) throws -> String {
+        let checked = try terms(queries)
+        guard checked.allSatisfy({ !$0.contains("://") && !$0.contains("@") && $0.range(of: #"[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}"#, options: .regularExpression) == nil })
+        else { throw RoomAIError.invalidProposal }
+        return checked.joined(separator: "\n")
+    }
+
+    static func findings(_ proposal: AIProposal, topic: String) throws -> RoomWebFindings {
+        guard let message = try message(proposal.message), proposal.action == nil,
+              proposal.research == nil, proposal.targetID == nil, proposal.title == nil,
+              proposal.query == nil, proposal.videoIDs == nil, proposal.points == nil, proposal.cueIndex == nil
+        else { throw RoomAIError.invalidProposal }
+        let queries = try terms(proposal.queries)
+        let raw = proposal.sources ?? []
+        guard !queries.isEmpty, raw.count <= 6 else { throw RoomAIError.invalidProposal }
+        var seen = Set<URL>()
+        let sources: [URL] = try raw.compactMap { value in
+            guard text(value, maxBytes: 2048) == value, !value.contains(where: \.isWhitespace),
+                  let parts = URLComponents(string: value), parts.scheme?.lowercased() == "https",
+                  parts.user == nil, parts.password == nil, let host = parts.host, host.contains("."),
+                  !host.hasSuffix(".local"), !host.hasSuffix(".localhost"),
+                  !host.allSatisfy({ $0.isNumber || $0 == "." }), let url = parts.url else { throw RoomAIError.invalidProposal }
+            return seen.insert(url).inserted ? url : nil
+        }
+        return RoomWebFindings(topic: topic, message: message, queries: queries, sources: sources)
     }
 
     static func clipped(_ string: String, bytes: Int) -> String {

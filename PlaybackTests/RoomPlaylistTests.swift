@@ -54,6 +54,51 @@ final class RoomPlaylistTests: XCTestCase {
         XCTAssertEqual(store.playlists[1], b)
     }
 
+    func testReviewAppendsToSavedPlaylistOnlyAfterConfirmation() throws {
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = RoomPlaylistStore(defaults: defaults)
+        let original = RoomPlaylist(title: "Evening", videos: [video("a"), video("b")], durations: ["a": 150])
+        let other = RoomPlaylist(title: "Later", videos: [video("c")])
+        try store.save(original)
+        try store.save(other)
+        let archive = defaults.data(forKey: RoomPlaylistStore.storageKey)
+
+        var review = original.appending(
+            [video("b", title: "A different title"), video("c"), video("c"), video("d")],
+            durations: ["a": 1, "b": 2, "c": 3, "d": 4]
+        )
+        XCTAssertEqual(review.id, original.id)
+        XCTAssertEqual(review.title, original.title)
+        XCTAssertEqual(review.videos.map(\.id), ["a", "b", "c", "d"])
+        XCTAssertEqual(Array(review.videos.prefix(2)), original.videos)
+        XCTAssertEqual(original.appending([video("a"), video("b")]), original)
+        review.move(video("d"), by: -1)
+        review.remove(video("c"))
+        review.append(video("e"), seconds: 5)
+        XCTAssertEqual(store.playlists, [original, other])
+        XCTAssertEqual(defaults.data(forKey: RoomPlaylistStore.storageKey), archive)
+
+        try store.save(review, replacing: original)
+        let reopened = RoomPlaylistStore(defaults: defaults)
+        XCTAssertEqual(reopened.playlists, [review, other])
+        XCTAssertEqual(reopened.playlists[0].videos.map(\.id), ["a", "b", "d", "e"])
+        XCTAssertEqual(reopened.playlists[0].durations, ["a": 150, "d": 4, "e": 5])
+    }
+
+    func testStaleAppendReviewPreservesAnInterveningChange() throws {
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = RoomPlaylistStore(defaults: defaults)
+        let original = RoomPlaylist(title: "Evening", videos: [video("first")])
+        try store.save(original)
+        let review = original.appending([video("proposed")])
+        let otherWindow = RoomPlaylistStore(defaults: defaults)
+        try otherWindow.add(video("manually-added"), to: original.id)
+        XCTAssertThrowsError(try store.save(review, replacing: original))
+        let current = try XCTUnwrap(RoomPlaylistStore(defaults: defaults).playlists.first)
+        XCTAssertEqual(current.videos.map(\.id), ["first", "manually-added"])
+        XCTAssertEqual(current.id, original.id)
+    }
+
     func testCorruptDataAndOversizedEditsLeavePriorArchiveUntouched() throws {
         defer { defaults.removePersistentDomain(forName: suite) }
         let corrupt = Data([0, 1, 2])

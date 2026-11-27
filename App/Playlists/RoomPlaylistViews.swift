@@ -148,58 +148,113 @@ struct RoomAddToPlaylistView: View {
 }
 
 struct RoomPlaylistDraftView: View {
-    private let original: RoomPlaylist?
+    private enum Mode {
+        case create, edit(RoomPlaylist), append(RoomPlaylist)
+
+        var original: RoomPlaylist? {
+            switch self {
+            case .create: nil
+            case .edit(let playlist), .append(let playlist): playlist
+            }
+        }
+    }
+
+    private let mode: Mode
     private let candidates: [ChannelVideo]
     private let durations: [String: Int]
     @Environment(RoomPlaylistStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var draft: RoomPlaylist
     @State private var issue: String?
+    @State private var showingSaved = false
 
     init(title: String, videos: [ChannelVideo], candidates: [ChannelVideo] = [], durations: [String: Int] = [:]) {
-        original = nil
-        var seen = Set<String>()
-        self.candidates = (videos + candidates).filter { seen.insert($0.id).inserted }
-        self.durations = durations
-        _draft = State(initialValue: RoomPlaylist(title: title, videos: videos, durations: durations))
+        self.init(mode: .create, draft: RoomPlaylist(title: title, videos: videos, durations: durations),
+                  candidates: videos + candidates, durations: durations)
+    }
+
+    init(appendingTo original: RoomPlaylist, videos: [ChannelVideo], candidates: [ChannelVideo] = [], durations: [String: Int] = [:]) {
+        self.init(mode: .append(original), draft: original.appending(videos, durations: durations),
+                  candidates: videos + candidates, durations: durations)
     }
 
     fileprivate init(playlist: RoomPlaylist) {
-        original = playlist
-        candidates = playlist.videos
-        durations = playlist.durations
-        _draft = State(initialValue: playlist)
+        self.init(mode: .edit(playlist), draft: playlist, candidates: playlist.videos, durations: playlist.durations)
+    }
+
+    private init(mode: Mode, draft: RoomPlaylist, candidates: [ChannelVideo], durations: [String: Int]) {
+        self.mode = mode
+        var seen = Set<String>()
+        self.candidates = candidates.filter { seen.insert($0.id).inserted }
+        self.durations = durations
+        _draft = State(initialValue: draft)
+    }
+
+    private var appendTarget: RoomPlaylist? {
+        if case .append(let playlist) = mode { return playlist }
+        return nil
+    }
+
+    private var heading: String {
+        switch mode {
+        case .create: candidates.isEmpty ? "New playlist" : "Review playlist"
+        case .edit: "Edit playlist"
+        case .append(let playlist): "Add to “\(playlist.title)”"
+        }
     }
 
     var body: some View {
         let selected = Set(draft.videos.map(\.id))
         let remaining = candidates.filter { !selected.contains($0.id) }
+        let savedCount = appendTarget?.videos.count ?? 0
+        let editable = draft.videos.dropFirst(savedCount)
+        let needsAdditions = appendTarget != nil && editable.isEmpty
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                RoomHeading(title: original != nil ? "Edit playlist" : candidates.isEmpty ? "New playlist" : "Review playlist",
-                            subtitle: draft.summary)
-                TextField("Playlist name", text: $draft.title)
-                    .accessibilityIdentifier("playlist-name")
+                RoomHeading(title: heading, subtitle: appendTarget == nil ? draft.summary : "After saving · " + draft.summary)
+                if let target = appendTarget {
+                    if !target.videos.isEmpty {
+                        Button {
+                            showingSaved.toggle()
+                        } label: {
+                            Label("Already in playlist (\(savedCount))", systemImage: showingSaved ? "chevron.up" : "chevron.down")
+                        }
+                        if showingSaved {
+                            ForEach(Array(target.videos.enumerated()), id: \.element.id) { index, video in
+                                PlaylistVideoRow(video: video, position: index + 1, seconds: video.durationSeconds)
+                                    .focusable()
+                            }
+                        }
+                    }
+                } else {
+                    TextField("Playlist name", text: $draft.title)
+                        .accessibilityIdentifier("playlist-name")
+                }
                 if let issue = store.loadError ?? issue { RoomNotice(message: issue) }
                 HStack(spacing: 22) {
-                    Button("Save playlist") {
+                    Button(appendTarget == nil ? "Save playlist" : "Add selected videos") {
                         do {
-                            try store.save(draft, replacing: original)
+                            try store.save(draft, replacing: mode.original)
                             dismiss()
                         } catch { issue = error.localizedDescription }
                     }
-                    .disabled(store.loadError != nil || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(store.loadError != nil || needsAdditions || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("playlist-save")
                     Button("Cancel", role: .cancel) { dismiss() }
                 }
-                if !draft.videos.isEmpty { RoomShelfTitle(title: "Play order") }
-                ForEach(Array(draft.videos.enumerated()), id: \.element.id) { index, video in
+                if !editable.isEmpty {
+                    RoomShelfTitle(title: appendTarget == nil ? "Play order" : "Proposed additions")
+                } else if needsAdditions {
+                    Text(remaining.isEmpty ? "There are no new videos to add." : "Choose a video below to add to this playlist.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(Array(editable.enumerated()), id: \.element.id) { index, video in
                     HStack(spacing: 16) {
-                        PlaylistVideoRow(video: video, position: index + 1, seconds: video.durationSeconds)
+                        PlaylistVideoRow(video: video, position: savedCount + index + 1, seconds: video.durationSeconds)
                         Button { draft.move(video, by: -1) } label: { Image(systemName: "arrow.up") }
                             .disabled(index == 0).accessibilityLabel("Move \(video.title) up")
                         Button { draft.move(video, by: 1) } label: { Image(systemName: "arrow.down") }
-                            .disabled(index == draft.videos.count - 1).accessibilityLabel("Move \(video.title) down")
+                            .disabled(index == editable.count - 1).accessibilityLabel("Move \(video.title) down")
                         Button { draft.remove(video) } label: { Image(systemName: "minus.circle") }
                             .accessibilityLabel("Remove \(video.title)")
                     }
