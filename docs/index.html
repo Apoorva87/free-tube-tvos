@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Explore Free Tube for Apple TV. Try the subscription shelves, playback speeds and in-app mini-player, then build it in Xcode.">
+  <meta name="theme-color" content="#f6f2eb">
+  <title>Free Tube for Apple TV</title>
+  <link rel="icon" href="assets/app-icon.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="demo.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#walkthrough">Skip to walkthrough</a>
+<header class="mast wrap">
+  <a class="brand" href="#top" aria-label="Free Tube home"><img src="assets/app-icon.png" alt="" width="40" height="32">Free Tube</a>
+  <nav aria-label="Main"><a href="#walkthrough">Walkthrough</a><a href="https://github.com/Apoorva87/free-tube-tvos">GitHub <span aria-hidden="true">↗</span></a></nav>
+</header>
+<main id="top">
+  <section class="intro wrap">
+    <h1>Your channels,<br>on the big screen.</h1>
+    <div class="intro-side"><p>Free Tube brings your YouTube subscriptions to Apple TV. Discover new creators and keep watching while you browse.</p>
+    <a class="build" href="https://github.com/Apoorva87/free-tube-tvos#run-in-xcode">Build for Apple TV <span aria-hidden="true">↗</span></a></div>
+  </section>
+
+  <section id="walkthrough" class="wrap guide" aria-labelledby="guide-title">
+    <div class="guide-bar"><h2 id="guide-title">Interactive walkthrough</h2><div class="scene-controls" role="group" aria-label="Choose a demo scene">
+      <button type="button" data-scene="home" aria-pressed="true">Home</button>
+      <button type="button" data-scene="player" aria-pressed="false">Playback</button>
+      <button type="button" data-scene="mini" aria-pressed="false">Mini-player</button>
+    </div></div>
+    <div class="tv" id="tv" aria-label="Illustrated Apple TV interface">
+      <div class="scene" id="home">
+        <div class="rail" aria-hidden="true"><span class="profile-dot"></span><span class="glass"></span><span>⌂</span><span>▤</span></div>
+        <div class="home-scroll">
+          <div class="feature">
+            <img src="assets/earth.webp" alt="Earth rising above the Moon’s horizon">
+            <div class="feature-copy"><span class="byline">Orbital Journal</span><h3>Earthrise</h3><p>Apollo 8 through the lens</p><button type="button" class="tv-button" data-film="earth">▶ &nbsp;Watch</button></div>
+          </div>
+          <div class="shelf"><h4>Recommended <small>Based on your subscriptions</small></h4>
+            <div class="cards">
+              <button type="button" data-film="saturn"><img src="assets/saturn.webp" alt=""><strong>Inside Saturn’s rings</strong><span>Ring Plane</span></button>
+              <button type="button" data-film="mars"><img src="assets/mars.webp" alt=""><strong>Landing on Mars</strong><span>Surface Lab</span></button>
+              <button type="button" data-film="jupiter"><img src="assets/jupiter.webp" alt=""><strong>The Great Red Spot</strong><span>Storm Atlas</span></button>
+            </div>
+          </div>
+          <div class="shelf"><h4>Creators to explore</h4><div class="cards">
+            <button type="button" data-film="neptune"><img src="assets/neptune.webp" alt=""><strong>Beyond Neptune</strong><span>Outer Worlds</span></button>
+            <button type="button" data-film="horizon"><img src="assets/earth.webp" alt=""><strong>A lunar horizon</strong><span>Moon Notes</span></button>
+          </div></div>
+        </div>
+      </div>
+      <div class="scene player" id="player" hidden>
+        <img class="play-art" src="assets/earth.webp" alt="">
+        <div class="transport"><span class="byline film-owner">Orbital Journal</span><h3 class="film-title">Earthrise</h3><div class="timeline"><i></i></div>
+        <div class="tools"><button type="button" id="toggle">Pause</button>
+        <label>Speed <select id="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+        <button type="button" data-scene="mini">Watch while browsing</button><output class="clock" aria-label="Playback time">0:00</output></div></div>
+      </div>
+      <div class="scene mini-scene" id="mini" hidden>
+        <h3>Search</h3>
+        <label class="sample-search"><span class="glass" aria-hidden="true"></span><input id="search-box" type="search" placeholder="Find a sample channel" aria-label="Find a sample channel" value="Orbit"></label>
+        <h4>Channels</h4><div id="matches"></div>
+        <div class="mini-window">
+          <img class="mini-art" src="assets/earth.webp" alt="Current playback preview">
+          <div class="mini-strip"><strong class="film-title">Earthrise</strong><button type="button" data-scene="player" aria-label="Expand video" title="Expand video">⤢</button><button type="button" data-scene="home" aria-label="Close video" title="Close video">×</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="caption"><p id="caption" aria-live="polite">Select a title to open the player. Scroll inside Home to explore both shelves.</p><small>Illustrated demo · Sample library</small></div>
+    <noscript><p>Enable JavaScript for the interactive scenes, or use the remote guide below.</p></noscript>
+  </section>
+
+  <section class="manual wrap" aria-labelledby="manual-title"><h2 id="manual-title">On your Apple TV</h2>
+    <div class="steps">
+      <article><h3>Connect your channels</h3><p>Set up your own Google TV client in Free Tube. Scan the QR code and approve read-only YouTube access on your phone. You can also follow public channels locally.</p><a href="https://github.com/Apoorva87/free-tube-tvos#connect-your-subscriptions">Sign-in instructions ↗</a></article>
+      <article><h3>Explore with the remote</h3><p>Move down to <b>Recommended</b> and <b>Creators to explore</b>. Move sideways through a row. Press Back to open the sidebar and Right to return to your tile.</p></article>
+      <article><h3>Keep a video playing</h3><p>Press Up during playback to choose a speed or <b>Watch while browsing</b>. The corner player keeps your place and speed as you search. Choose <b>Expand video</b> to return.</p></article>
+    </div>
+  </section>
+</main>
+<footer class="wrap"><span>Free Tube for Apple TV</span><div><a href="https://github.com/Apoorva87/free-tube-tvos/blob/main/docs/credits.md">Image credits</a><a href="https://github.com/Apoorva87/free-tube-tvos/blob/main/LICENSE">GPL-3.0</a></div></footer>
+</body>
+</html>

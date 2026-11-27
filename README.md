@@ -1,0 +1,47 @@
+# Free Tube for Apple TV
+
+Free Tube is a native tvOS app for watching public YouTube videos and browsing the channels you follow. Home brings together recent uploads and two discovery rows. You can open a recommendation without subscribing, watch at 1.5× or 2×, or keep the current video playing in the corner while you look for another. The Apple TV runs the app on its own.
+
+**[Try the interactive walkthrough →](https://apoorva87.github.io/free-tube-tvos/)**
+
+## Run in Xcode
+
+1. Clone this repository. Open `ChannelRoom.xcodeproj` in Xcode on a Mac with the tvOS SDK and Swift 6 support. **ChannelRoom** is the internal project and scheme name. The app appears on the TV as **Free Tube**.
+2. Select the **ChannelRoom** scheme and an Apple TV simulator running tvOS 17.6 or later. Choose **Product → Run**. Open **Search** to look up a public channel by name or handle and follow it locally.
+3. For a physical Apple TV, pair it with Xcode, select it as the run destination and choose your Apple developer team. For local signing overrides, copy `Configuration/Local.xcconfig.example` to `Configuration/Local.xcconfig` and set `CHANNELROOM_BUNDLE_ID` and `DEVELOPMENT_TEAM` to your values. Run the app on the TV.
+
+## Connect your subscriptions
+
+Google sign-in is optional. To import subscriptions, configure a Google OAuth client for your own installation.
+
+1. In Google Cloud, enable **YouTube Data API v3**, configure the OAuth consent screen, and add your Google account as a test user if the project is in testing.
+2. Create an OAuth client of type **TVs and Limited Input devices**. [Google’s device authorization guide](https://developers.google.com/identity/protocols/oauth2/limited-input-device)
+3. In Free Tube, open **Sign in → Set up Google client**, enter your client ID and client secret, and select **Save on this Apple TV**. The iPhone Apple TV Remote keyboard supports paste.
+4. Choose **Sign in with Google**. Scan the QR code with your phone, confirm the short code displayed on the TV and authorize read-only YouTube access. If scanning is inconvenient, open the verification address shown on the TV and enter that code.
+5. If subscriptions look unfamiliar, open the profile at the top of the sidebar. **Switch YouTube profile** lets you choose a different YouTube channel associated with your Google account.
+
+The TV stores manually entered client settings and the Google refresh token in its Keychain. Access tokens are held in memory. The app keeps local follows and a per-profile discovery cache on the TV. To remove the saved sign-in, select **Sign out of this TV**. The public source ships with empty client settings. Enter credentials on the TV for a build you plan to share. Values supplied through build settings are embedded in that app bundle.
+
+## Use the remote
+
+| What you want to do | How |
+| --- | --- |
+| Explore new creators | Move down from the featured video to **Recommended** and **Creators to explore**. Move left or right within a row. |
+| Return to your channels | Press **Back** while browsing and select **Subscriptions**. Focus a channel to filter its uploads. Press **Right** to return to the videos. |
+| Adjust playback speed | Press **Up** during playback and choose the speedometer. Available rates are 0.5×, 1×, 1.25×, 1.5× and 2×. |
+| Search while watching | Choose **Watch while browsing** in the player, then open **Search**. The in-app mini-player uses one-third of the screen width. The tvOS keyboard covers the picture temporarily during text entry. |
+| Go back to full screen | Choose **Expand video** in the mini-player or sidebar. Playback keeps its current position and rate. **Close video** stops it. |
+
+## How it works
+
+- **Catalog.** The read-only Google connection imports subscriptions. Home uses channel topics and recent uploads to find other creators, filters out followed channels and divides distinct creators between the two discovery rows. Results depend on the available public catalog.
+- **Player.** The app resolves an available public stream and plays it with AVKit. This direct playback path does not request a separate YouTube ad player. Stream availability varies, and ads embedded in the video are part of the picture. When playback is unavailable, **Open in YouTube** hands the video to the official app, where YouTube’s own ad settings apply.
+- **Browsing during playback.** A shared playback session keeps the same AVPlayer item alive while the surface moves between full screen and the corner. The mini-player works inside Free Tube.
+
+## Source and tests
+
+The app lives in [App](App). The checked-in Xcode project is ready to open. [project.yml](project.yml) is its XcodeGen specification. The player’s stream-selection and observation logic are adapted from [SmartTubeIOS](https://github.com/milika/SmartTubeIOS/tree/6bd85d39ab9458b3dc2582597dc7ed10c2fd8dce). Its native HLS negotiation follows the AuTube approach.
+
+Run the stream-selection fixtures on a Mac with `swift test --package-path Vendor/SmartTubeIOS`. In Xcode, **Product → Test** runs discovery, playback and remote-navigation checks. Live playback needs internet access. Account-dependent UI checks use the test device’s catalog.
+
+The source is distributed under [GPL-3.0](LICENSE). The walkthrough uses an illustrative library and separately credited [NASA photographs](docs/credits.md). Free Tube is an independent project.

@@ -1,0 +1,28 @@
+# Per-install credentials and signing material
+Configuration/*.xcconfig
+!Configuration/Build.xcconfig
+.env
+.env.*
+client_secret*.json
+credentials*.json
+*.p12
+*.p8
+*.pem
+*.key
+*.mobileprovision
+*.provisionprofile
+*.keychain*
+# User state, build outputs and device captures
+.DS_Store
+xcuserdata/
+*.xcuserstate
+.build/
+.swiftpm/
+DerivedData/
+build/
+*.xcresult
+*.xcarchive
+*.app
+*.ipa
+*.ips
+*.log

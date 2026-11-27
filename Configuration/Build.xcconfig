@@ -1,0 +1,5 @@
+// Personal settings can override these values. Local.xcconfig is gitignored.
+CHANNELROOM_BUNDLE_ID = local.channelroom.tv
+CHANNELROOM_GOOGLE_CLIENT_ID =
+CHANNELROOM_GOOGLE_CLIENT_SECRET =
+#include? "Local.xcconfig"

@@ -1,0 +1,68 @@
+name: ChannelRoom
+options:
+  minimumXcodeGenVersion: 2.40.0
+  deploymentTarget:
+    tvOS: '17.6'
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    MARKETING_VERSION: '0.1.0'
+    CURRENT_PROJECT_VERSION: '10'
+targets:
+  ChannelRoom:
+    type: application
+    platform: tvOS
+    sources:
+      - path: App
+        type: syncedFolder
+      - path: Vendor/SmartTubeIOS/Sources/SmartTubeIOSCore
+    configFiles:
+      Debug: Configuration/Build.xcconfig
+      Release: Configuration/Build.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(CHANNELROOM_BUNDLE_ID)
+        PRODUCT_NAME: ChannelRoom
+        INFOPLIST_FILE: Configuration/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: ChannelRoom Brand
+        CODE_SIGN_STYLE: Automatic
+  ChannelRoomPlaybackTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources: [PlaybackTests]
+    dependencies:
+      - target: ChannelRoom
+    configFiles:
+      Debug: Configuration/Build.xcconfig
+      Release: Configuration/Build.xcconfig
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: $(CHANNELROOM_BUNDLE_ID).playbacktests
+  ChannelRoomUITests:
+    type: bundle.ui-testing
+    platform: tvOS
+    sources: [Tests]
+    dependencies:
+      - target: ChannelRoom
+    configFiles:
+      Debug: Configuration/Build.xcconfig
+      Release: Configuration/Build.xcconfig
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: $(CHANNELROOM_BUNDLE_ID).uitests
+        TEST_TARGET_NAME: ChannelRoom
+schemes:
+  ChannelRoom:
+    build:
+      targets:
+        ChannelRoom: all
+    run:
+      config: Debug
+    test:
+      targets: [ChannelRoomPlaybackTests, ChannelRoomUITests]
+    archive:
+      config: Release

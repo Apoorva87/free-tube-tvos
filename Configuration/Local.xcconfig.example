@@ -1,0 +1,8 @@
+// Copy to Local.xcconfig and fill in your Google TV OAuth client settings.
+// Google Cloud: enable YouTube Data API v3; create a TVs and Limited Input Devices client.
+CHANNELROOM_GOOGLE_CLIENT_ID =
+CHANNELROOM_GOOGLE_CLIENT_SECRET =
+
+// For a physical Apple TV, set a unique ID and your Apple Developer team.
+CHANNELROOM_BUNDLE_ID = local.channelroom.tv
+DEVELOPMENT_TEAM =
