@@ -1,6 +1,6 @@
 # Walkthrough image credits
 
-The interactive guide uses sample titles and channel names. The photographs are cropped and resized for the guide. The app icon is the Free Tube project artwork.
+The interactive guide uses sample titles and channel names. The photographs are cropped and resized for the guide. The app icon is the freeTube project artwork.
 
 | Photograph | Credit |
 | --- | --- |

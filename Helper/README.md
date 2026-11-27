@@ -1,4 +1,4 @@
-# Free Tube laptop helper
+# freeTube laptop helper
 
 Run the helper on the same network as your Apple TV to use Ask AI. Your laptop sends the question and selected video metadata to Codex through your own ChatGPT sign-in. Ask AI can answer a question, suggest videos, draft a playlist, or suggest additions to a selected playlist. Free-text routing can receive up to 40 local playlist names and IDs. A request for suggestions produces up to three YouTube search phrases. The TV retrieves actual candidates and sends those candidates back for ranking.
 
@@ -16,7 +16,7 @@ python3 Helper/helper.py serve --provider codex
 
 Follow the device sign-in shown by the official CLI. Some ChatGPT accounts require enabling device code authentication in their security settings. Only this image uses the dedicated login. Keep the final command running while you use Ask AI.
 
-In the TV’s helper settings, select the advertised **Free Tube** name that matches the laptop and enter the complete pairing string shown in its terminal. An iPhone keyboard or paste can help with entry. The first 64 hexadecimal characters pin the TLS certificate, and the eight digits after the dot authorize pairing. The code expires after five minutes, after five unsuccessful guesses, or on its first successful use. Restart the helper for a new code. Pairing another TV replaces the previous TV’s bearer token. Restarting alone preserves an existing pairing.
+In the TV’s helper settings, select the advertised **freeTube** name that matches the laptop and enter the complete pairing string shown in its terminal. An iPhone keyboard or paste can help with entry. The first 64 hexadecimal characters pin the TLS certificate, and the eight digits after the dot authorize pairing. The code expires after five minutes, after five unsuccessful guesses, or on its first successful use. Restart the helper for a new code. Pairing another TV replaces the previous TV’s bearer token. Restarting alone preserves an existing pairing.
 
 ## Try free-text requests and public research
 
@@ -28,7 +28,7 @@ The helper verifies live search mode, provider capability, and completed native 
 
 ## Caption imports for older TV builds
 
-Free Tube builds 20 and earlier can use the helper’s caption endpoints. For those builds, import a video-relative WebVTT, SRT or timestamped text file you have permission to use. Replace the sample ID and file path with yours.
+freeTube builds 20 and earlier can use the helper’s caption endpoints. For those builds, import a video-relative WebVTT, SRT or timestamped text file you have permission to use. Replace the sample ID and file path with yours.
 
 ```sh
 python3 Helper/helper.py import-captions dQw4w9WgXcQ ./captions.vtt --permitted

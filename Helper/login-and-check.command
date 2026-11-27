@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sign in to the Free Tube container and verify its Bonjour advertisement on macOS."""
+"""Sign in to the freeTube container and verify its Bonjour advertisement on macOS."""
 
 import argparse
 import hashlib
@@ -79,7 +79,7 @@ def main():
         login()
         status = runner.run("status")
     print(status["detail"], flush=True)
-    name = "Free Tube " + pin[:8]
+    name = "freeTube " + pin[:8]
     endpoint = discover(name)
     child = None
     try:

@@ -1,6 +1,6 @@
-# Free Tube for Apple TV
+# freeTube for Apple TV
 
-Free Tube is an independent YouTube client for Apple TV. Open **Discover** to see what your channels just published and find new creators through your subscriptions and recent likes. Select a thumbnail to play it, hold Select to save it to a playlist, or keep it playing in the corner while you search.
+freeTube is an independent YouTube client for Apple TV. Open **Discover** to see what your channels just published and find new creators through your subscriptions and recent likes. Select a thumbnail to play it, hold Select to save it to a playlist, or keep it playing in the corner while you search.
 
 [Try the interactive walkthrough](https://apoorva87.github.io/free-tube-tvos/) · [Build for Apple TV](#run-in-xcode) · [Connect your subscriptions](#connect-your-subscriptions)
 
@@ -14,8 +14,8 @@ The native tvOS player supports speeds from 0.5× to 2×. Search, viewing histor
 
 ## Run in Xcode
 
-1. Clone this repository. Open `ChannelRoom.xcodeproj` in Xcode on a Mac with the tvOS SDK and Swift 6 support. **ChannelRoom** is the internal project and scheme name. The app appears on the TV as **Free Tube**.
-2. Select the **ChannelRoom** scheme and an Apple TV simulator running tvOS 17.6 or later. Choose **Product → Run**. Open **Search** to look up a public channel by name or handle and follow it locally.
+1. Clone this repository. Open `freeTube.xcodeproj` in Xcode on a Mac with the tvOS SDK and Swift 6 support.
+2. Select the **freeTube** scheme and an Apple TV simulator running tvOS 17.6 or later. Choose **Product → Run**. Open **Search** to look up a public channel by name or handle and follow it locally.
 3. For a physical Apple TV, pair it with Xcode, select it as the run destination and choose your Apple developer team. For local signing overrides, copy `Configuration/Local.xcconfig.example` to `Configuration/Local.xcconfig` and set `CHANNELROOM_BUNDLE_ID` and `DEVELOPMENT_TEAM` to your values. Run the app on the TV.
 
 ## Connect your subscriptions
@@ -24,7 +24,7 @@ Google sign-in is optional. To import subscriptions, configure a Google OAuth cl
 
 1. In Google Cloud, enable **YouTube Data API v3**, configure the OAuth consent screen, and add your Google account as a test user if the project is in testing.
 2. Create an OAuth client of type **TVs and Limited Input devices**. [Google’s device authorization guide](https://developers.google.com/identity/protocols/oauth2/limited-input-device)
-3. In Free Tube, open **Sign in → Set up Google client**, enter your client ID and client secret, and select **Save on this Apple TV**. The iPhone Apple TV Remote keyboard supports paste.
+3. In freeTube, open **Sign in → Set up Google client**, enter your client ID and client secret, and select **Save on this Apple TV**. The iPhone Apple TV Remote keyboard supports paste.
 4. Choose **Sign in with Google**. Scan the QR code with your phone, confirm the short code displayed on the TV and authorize read-only YouTube access. If scanning is inconvenient, open the verification address shown on the TV and enter that code.
 5. If subscriptions look unfamiliar, open the profile at the top of the sidebar. **Switch YouTube profile** lets you choose a different YouTube channel associated with your Google account.
 
@@ -38,7 +38,7 @@ The TV stores manually entered client settings and the Google refresh token in i
 | Move down the sidebar | From the profile icon, press **Down** for Discover, then Home, Subscriptions, Playlists, History, Search, Ask AI, and Settings. |
 | Return to your channels | Press **Back** while browsing and select **Subscriptions**. Focus a channel to filter its uploads. Press **Right** to return to the videos. |
 | Adjust playback speed | Press **Up** during playback and choose the speedometer. Available rates are 0.5×, 1×, 1.25×, 1.5× and 2×. |
-| Visit the creator | Choose **View creator** in the player controls. Play another upload, follow the channel on this TV, or select **Subscribe on YouTube** and scan the code to subscribe on your phone. When you close the code, Free Tube refreshes the subscriptions for its signed-in profile. |
+| Visit the creator | Choose **View creator** in the player controls. Play another upload, follow the channel on this TV, or select **Subscribe on YouTube** and scan the code to subscribe on your phone. When you close the code, freeTube refreshes the subscriptions for its signed-in profile. |
 | Read the description | Choose **Description** in the player controls. Use the remote to scroll the creator’s text. **Back** returns to the video. |
 | Find a similar song or video | Choose the right-hand **Show more options** control, or swipe up on the Siri Remote while the controls are hidden. Browse left or right in the compact thumbnail row across the bottom of the video. Select a thumbnail to play it, or hold Select and choose **Add to playlist** to save it. Suggestions come from the current video’s YouTube recommendations. |
 | Search while watching | Choose **Watch while browsing** in the player, then open **Search**. The in-app mini-player uses one-third of the screen width. The tvOS keyboard covers the picture temporarily during text entry. |
@@ -48,14 +48,14 @@ The TV stores manually entered client settings and the Google refresh token in i
 
 ## Custom playlists
 
-Open **Playlists → New playlist**. Hold Select on a video tile and choose **Add to playlist**, or use **Add to playlist** in the player. Open a saved playlist to browse numbered thumbnails or choose **Play all**. In **Edit playlist**, select a tile to move that video earlier or later or remove it. Playlists are shared by profiles on this installation of Free Tube and are saved on the TV. You can manage them while signed out or while your helper is asleep.
+Open **Playlists → New playlist**. Hold Select on a video tile and choose **Add to playlist**, or use **Add to playlist** in the player. Open a saved playlist to browse numbered thumbnails or choose **Play all**. In **Edit playlist**, select a tile to move that video earlier or later or remove it. Playlists are shared by profiles on this installation of freeTube and are saved on the TV. You can manage them while signed out or while your helper is asleep.
 
 ## Ask AI
 
 Open **Ask AI** from the sidebar or the Search screen. Select **Connect or check helper** to pair a computer running the dedicated Codex helper. Both devices need to be on the same local network. On a Mac with the helper image already built, run [the login and discovery launcher](Helper/login-and-check.command). It checks the existing Codex session, offers device sign-in when needed, and verifies the advertised helper certificate. The helper signs in through its own Codex session. The session uses the configured provider for inference and receives the prompt and selected video metadata. Google credentials stay on the TV. There is no automatic provider or paid API fallback. [Set up the helper](Helper/README.md)
 
 - **Ask in your own words.** Select **Ask AI** in the sidebar and send a question or a task. For example, “Research how PagedAttention uses the KV cache, then add two visual explainers to my ML Notes playlist.” The helper can answer, find videos, propose a new playlist, or propose additions to an existing one. Browse video suggestions as thumbnail tiles, choose the destination on the TV, and review changes before saving.
-- **Research a topic.** Review the proposed public search topic on the TV before starting research. The paired Codex session can use its built-in web search for that request. The TV shows the findings and available source addresses. It uses the research terms to fetch playable candidates from Free Tube’s catalog. The research request carries only the approved topic.
+- **Research a topic.** Review the proposed public search topic on the TV before starting research. The paired Codex session can use its built-in web search for that request. The TV shows the findings and available source addresses. It uses the research terms to fetch playable candidates from freeTube’s catalog. The research request carries only the approved topic.
 - **Find videos.** Describe what you want and choose **Find videos**. Pick a result to play it.
 - **Build a playlist.** Try “Build a 45-minute playlist that teaches KV cache with visual explainers and no repeats.” The TV searches its video catalog, verifies the proposed IDs and uses known durations to fit the draft within the requested time. Review the actual total, reorder or remove videos, add alternatives, and save.
 
@@ -63,7 +63,7 @@ Open **Ask AI** from the sidebar or the Search screen. Select **Connect or check
 
 - **Recommendations.** The TV interleaves results from several source videos so one popular upload does not fill a whole row. If a source returns too few videos, Discover can draw on followed-channel topics. Recommendations are cached per profile on the TV.
 - **Player.** The app resolves an available public stream and plays it with AVKit. This direct playback path does not request a separate YouTube ad player. Stream availability varies, and ads embedded in the video are part of the picture. When playback is unavailable, **Open in YouTube** hands the video to the official app, where YouTube’s own ad settings apply.
-- **Browsing during playback.** A shared playback session keeps the same AVPlayer item alive while the surface moves between full screen and the corner. The mini-player works inside Free Tube.
+- **Browsing during playback.** A shared playback session keeps the same AVPlayer item alive while the surface moves between full screen and the corner. The mini-player works inside freeTube.
 
 ## Source and tests
 
@@ -71,4 +71,4 @@ The app lives in [App](App). The checked-in Xcode project is ready to open. [pro
 
 Run the stream-selection fixtures on a Mac with `swift test --package-path Vendor/SmartTubeIOS`. In Xcode, **Product → Test** runs playlist, assistant validation, helper connection, discovery, playback and remote-navigation checks. Run the helper tests with `python3 -m unittest discover -s Helper`. Live playback needs internet access. Account-dependent UI checks use the test device’s catalog.
 
-The source is distributed under [GPL-3.0](LICENSE). The walkthrough uses an illustrative library and separately credited [NASA photographs](docs/credits.md). Free Tube is an independent project.
+The source is distributed under [GPL-3.0](LICENSE). The walkthrough uses an illustrative library and separately credited [NASA photographs](docs/credits.md). freeTube is an independent project.

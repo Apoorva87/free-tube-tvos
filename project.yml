@@ -1,4 +1,4 @@
-name: ChannelRoom
+name: freeTube
 options:
   minimumXcodeGenVersion: 2.40.0
   deploymentTarget:
@@ -8,9 +8,9 @@ settings:
     SWIFT_VERSION: '6.0'
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     MARKETING_VERSION: '0.2.0'
-    CURRENT_PROJECT_VERSION: '26'
+    CURRENT_PROJECT_VERSION: '27'
 targets:
-  ChannelRoom:
+  freeTube:
     type: application
     platform: tvOS
     sources:
@@ -23,17 +23,17 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CHANNELROOM_BUNDLE_ID)
-        PRODUCT_NAME: ChannelRoom
+        PRODUCT_NAME: freeTube
         INFOPLIST_FILE: Configuration/Info.plist
         GENERATE_INFOPLIST_FILE: NO
-        ASSETCATALOG_COMPILER_APPICON_NAME: ChannelRoom Brand
+        ASSETCATALOG_COMPILER_APPICON_NAME: freeTube Brand
         CODE_SIGN_STYLE: Automatic
-  ChannelRoomPlaybackTests:
+  freeTubePlaybackTests:
     type: bundle.unit-test
     platform: tvOS
     sources: [PlaybackTests]
     dependencies:
-      - target: ChannelRoom
+      - target: freeTube
     configFiles:
       Debug: Configuration/Build.xcconfig
       Release: Configuration/Build.xcconfig
@@ -41,12 +41,12 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: $(CHANNELROOM_BUNDLE_ID).playbacktests
-  ChannelRoomUITests:
+  freeTubeUITests:
     type: bundle.ui-testing
     platform: tvOS
     sources: [Tests]
     dependencies:
-      - target: ChannelRoom
+      - target: freeTube
     configFiles:
       Debug: Configuration/Build.xcconfig
       Release: Configuration/Build.xcconfig
@@ -54,15 +54,15 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: $(CHANNELROOM_BUNDLE_ID).uitests
-        TEST_TARGET_NAME: ChannelRoom
+        TEST_TARGET_NAME: freeTube
 schemes:
-  ChannelRoom:
+  freeTube:
     build:
       targets:
-        ChannelRoom: all
+        freeTube: all
     run:
       config: Debug
     test:
-      targets: [ChannelRoomPlaybackTests, ChannelRoomUITests]
+      targets: [freeTubePlaybackTests, freeTubeUITests]
     archive:
       config: Release

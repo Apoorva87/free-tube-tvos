@@ -20,7 +20,7 @@ struct RoomWatchHistoryView: View {
                 }
                 if store.videos.isEmpty {
                     if store.issue == nil {
-                        RoomHeading(title: "No watch history yet", subtitle: "Videos you watch in Free Tube on this Apple TV will appear here.")
+                        RoomHeading(title: "No watch history yet", subtitle: "Videos you watch in freeTube on this Apple TV will appear here.")
                             .accessibilityIdentifier("history-empty")
                     }
                     Button("Browse Home", action: browse)

@@ -127,7 +127,7 @@ enum RoomAIError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidProposal: "The helper returned a selection Free Tube could not verify. Try a different request."
+        case .invalidProposal: "The helper returned a selection freeTube could not verify. Try a different request."
         case .noSearchResults: "No matching videos were available from search. Try another topic."
         case .noEvidence: "There’s no matching caption evidence in the supplied cues. Try related search."
         case .staleVideo: "The playing video changed. Open Ask AI on the current video."

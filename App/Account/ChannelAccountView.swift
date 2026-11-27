@@ -27,7 +27,7 @@ struct ChannelAccountView: View {
             Group {
                 switch account.state {
                 case .unconfigured:
-                    Text("Set up the Google TV client for this copy of Free Tube. Then approve your YouTube account on your phone.")
+                    Text("Set up the Google TV client for this copy of freeTube. Then approve your YouTube account on your phone.")
                 case .signedOut:
                     Text("Connect your YouTube account to see the channels you subscribe to.")
                 case .requesting:

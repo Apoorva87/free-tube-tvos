@@ -26,7 +26,7 @@ public enum PublicPlayerError: LocalizedError, Equatable {
 }
 
 public struct PublicVideoPlayer: Sendable {
-    private static let userAgent = "ChannelRoom/0.1 (Apple TV; native HLS player)"
+    private static let userAgent = "freeTube/0.1 (Apple TV; native HLS player)"
     private let session: URLSession
 
     init(session: URLSession) {

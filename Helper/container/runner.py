@@ -193,7 +193,7 @@ class Session:
                 early.append(event)
 
     def start(self):
-        self.call("initialize", {"clientInfo": {"name": "freetube_helper", "title": "Free Tube",
+        self.call("initialize", {"clientInfo": {"name": "freetube_helper", "title": "freeTube",
                                                  "version": "1.0"}, "capabilities": {"experimentalApi": True}})
         self.send({"method": "initialized"})
 

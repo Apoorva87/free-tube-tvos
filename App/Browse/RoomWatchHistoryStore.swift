@@ -79,7 +79,7 @@ final class RoomWatchHistoryStore {
             videos = entries.compactMap { $0.owner == owner ? $0.video : nil }
             issue = nil
         } catch {
-            issue = "Free Tube couldn’t access watch history on this Apple TV."
+            issue = "freeTube couldn’t access watch history on this Apple TV."
         }
     }
 }

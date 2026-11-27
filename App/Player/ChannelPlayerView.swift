@@ -243,7 +243,7 @@ final class ChannelPlayback {
             let waiting = player.timeControlStatus == .waitingToPlayAtSpecifiedRate && player.currentTime().seconds <= 0
             guard phase == .loading || waiting else { return }
             stop()
-            phase = .failed("The video didn’t start in Free Tube.")
+            phase = .failed("The video didn’t start in freeTube.")
         }
         defer { startupDeadline.cancel() }
         do {
@@ -263,7 +263,7 @@ final class ChannelPlayback {
                 case .started: recordPlaybackStart(onStart)
                 case .status(.readyToPlay): phase = .playing
                 case .status(.failed), .failed:
-                    phase = .failed("Free Tube couldn’t play the stream YouTube supplied for this video.")
+                    phase = .failed("freeTube couldn’t play the stream YouTube supplied for this video.")
                     return
                 case .ended:
                     recordPlaybackStart(onStart)

@@ -1,5 +1,5 @@
 import XCTest
-@testable import ChannelRoom
+@testable import freeTube
 
 final class RoomAIValidationTests: XCTestCase {
     private let a = ChannelVideo(id: "11111111111", title: "Visual explanation", channelID: "one", channelTitle: "Teacher", thumbnail: nil)

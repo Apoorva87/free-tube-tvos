@@ -83,7 +83,7 @@ enum RoomPlaylistError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unreadable: "Free Tube couldn’t read the saved playlists on this TV. Your saved data has been kept."
+        case .unreadable: "freeTube couldn’t read the saved playlists on this TV. Your saved data has been kept."
         case .missingTitle: "Enter a playlist name."
         case .longTitle: "Use a playlist name with 100 characters or fewer."
         case .tooManyPlaylists: "This TV has reached its limit of 40 playlists. Delete a playlist to create another."

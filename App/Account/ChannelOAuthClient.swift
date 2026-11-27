@@ -63,8 +63,8 @@ struct ChannelOAuthClient: Sendable {
             let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             return value.isEmpty || value.contains("$(") ? nil : value
         }
-        guard let id = value(for: "ChannelRoomGoogleClientID"),
-              let secret = value(for: "ChannelRoomGoogleClientSecret") else { return nil }
+        guard let id = value(for: "freeTubeGoogleClientID"),
+              let secret = value(for: "freeTubeGoogleClientSecret") else { return nil }
         return Self(clientID: id, clientSecret: secret)
     }
 

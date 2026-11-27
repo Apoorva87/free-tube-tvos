@@ -1,5 +1,5 @@
 import XCTest
-@testable import ChannelRoom
+@testable import freeTube
 
 final class RoomCategoryTests: XCTestCase {
     private let owner = "UC0000000000000000000000"

@@ -47,7 +47,7 @@ def identity(directory):
         with tempfile.TemporaryDirectory(dir=directory) as temp:
             key, cert = Path(temp) / "key", Path(temp) / "cert"
             subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256", "-nodes",
-                            "-days", "3650", "-subj", "/CN=Free Tube Helper", "-keyout", str(key),
+                            "-days", "3650", "-subj", "/CN=freeTube Helper", "-keyout", str(key),
                             "-out", str(cert)], check=True, stderr=subprocess.DEVNULL)
             private_write(path, key.read_bytes() + cert.read_bytes())
     cert = path.read_text().split("-----BEGIN CERTIFICATE-----", 1)[1]
@@ -341,7 +341,7 @@ def main():
         except BlockingIOError:
             parser.exit(1, "This helper is already running.\n")
         service = Service(directory, Pairing(directory, pin), runner)
-        name = "Free Tube " + pin[:8]
+        name = "freeTube " + pin[:8]
         ipaddress.ip_address(args.bind)
         with Server((args.bind, args.port), context, service) as server:
             port = server.server_address[1]

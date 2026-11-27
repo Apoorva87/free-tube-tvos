@@ -1,6 +1,6 @@
 import Security
 import XCTest
-@testable import ChannelRoom
+@testable import freeTube
 
 final class RoomHelperTests: XCTestCase {
     func testPairingRequiresFullOutOfBandFingerprintAndASCIISecret() throws {

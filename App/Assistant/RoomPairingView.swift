@@ -16,7 +16,7 @@ struct RoomPairingView: View {
                     Label(name, systemImage: "laptopcomputer").font(.title2)
                     Text(helper.statusText).foregroundStyle(.secondary)
                 } else {
-                    Text("Start the Free Tube helper on your laptop and connect both devices to the same network.")
+                    Text("Start the freeTube helper on your laptop and connect both devices to the same network.")
                         .foregroundStyle(.secondary)
                     if helper.helpers.isEmpty {
                         Label("Looking for laptops…", systemImage: "wifi")

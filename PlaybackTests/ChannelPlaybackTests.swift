@@ -1,6 +1,6 @@
 import AVFoundation
 import XCTest
-@testable import ChannelRoom
+@testable import freeTube
 
 @MainActor
 final class ChannelPlaybackTests: XCTestCase {

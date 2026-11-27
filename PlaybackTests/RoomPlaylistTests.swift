@@ -1,5 +1,5 @@
 import XCTest
-@testable import ChannelRoom
+@testable import freeTube
 
 @MainActor
 final class RoomPlaylistTests: XCTestCase {

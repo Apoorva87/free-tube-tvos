@@ -1,5 +1,5 @@
 import XCTest
-@testable import ChannelRoom
+@testable import freeTube
 
 final class RoomDiscoveryTests: XCTestCase {
     private func video(_ id: String, by creator: String, day: Int = 0) -> ChannelVideo {
