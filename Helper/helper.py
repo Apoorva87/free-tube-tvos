@@ -121,7 +121,7 @@ class DockerRunner:
             result = subprocess.run(self.command(action, name),
                                     input=json.dumps(data).encode() if data is not None else b"",
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                    timeout=90 if action == "ask" else 8)
+                                    timeout=90 if action == "ask" else 13)
         except subprocess.TimeoutExpired:
             with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                 subprocess.run(self.docker + ["rm", "-f", name], stdout=subprocess.DEVNULL,
