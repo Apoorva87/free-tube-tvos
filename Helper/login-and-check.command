@@ -50,7 +50,9 @@ def verify_endpoint(endpoint, fingerprint):
 
 
 def login():
-    print("In Safari, open the OpenAI address printed below. Enter the one-time code from this Terminal window.", flush=True)
+    url = "https://auth.openai.com/codex/device"
+    print(f"Enter the one-time code from this Terminal window on {url} in Safari.", flush=True)
+    subprocess.run(["/usr/bin/open", "-a", "Safari", url], check=False, stderr=subprocess.DEVNULL)
     subprocess.run([sys.executable, str(HELPER), "login", "--provider", "codex"], check=True)
 
 

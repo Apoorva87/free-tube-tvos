@@ -116,12 +116,13 @@ class DockerRunner:
 
     def run(self, action, data=None):
         name = "freetube-" + secrets.token_hex(12)
+        timeout = 120 if action == "ask" and data and data.get("kind") == "research" else 90
         try:
             # The runner emits only its small response envelope. The CLI stream is capped inside the container.
             result = subprocess.run(self.command(action, name),
                                     input=json.dumps(data).encode() if data is not None else b"",
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                    timeout=90 if action == "ask" else 13)
+                                    timeout=timeout if action == "ask" else 13)
         except subprocess.TimeoutExpired:
             with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                 subprocess.run(self.docker + ["rm", "-f", name], stdout=subprocess.DEVNULL,

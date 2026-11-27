@@ -1,6 +1,6 @@
 # Free Tube laptop helper
 
-Run the helper on the same network as your Apple TV to use Ask AI. Your laptop sends the question and selected video titles or caption excerpts to Codex through your own ChatGPT sign-in. A request for suggestions first produces a search phrase. The TV retrieves actual candidates and sends those candidates back for ranking. A summary or timestamp jump needs timed captions for that exact video.
+Run the helper on the same network as your Apple TV to use Ask AI. Your laptop sends the question and selected video titles or caption excerpts to Codex through your own ChatGPT sign-in. Ask AI can answer a question, suggest videos, draft a playlist, or suggest additions to a selected playlist. Free-text routing can receive up to 40 local playlist names and IDs. A request for suggestions produces up to three YouTube search phrases. The TV retrieves actual candidates and sends those candidates back for ranking. A summary or timestamp jump needs timed captions for that exact video.
 
 ## Set up Codex
 
@@ -17,6 +17,14 @@ python3 Helper/helper.py serve --provider codex
 Follow the device sign-in shown by the official CLI. Some ChatGPT accounts require enabling device code authentication in their security settings. Only this image uses the dedicated login. Keep the final command running while you use Ask AI.
 
 In the TV’s helper settings, select the advertised **Free Tube** name that matches the laptop and enter the complete pairing string shown in its terminal. An iPhone keyboard or paste can help with entry. The first 64 hexadecimal characters pin the TLS certificate, and the eight digits after the dot authorize pairing. The code expires after five minutes, after five unsuccessful guesses, or on its first successful use. Restart the helper for a new code. Pairing another TV replaces the previous TV’s bearer token. Restarting alone preserves an existing pairing.
+
+## Try free-text requests and public research
+
+Ask “What is a KV cache?” for an explanation, “Find videos on KV cache” for catalog suggestions, or “Add introductory guitar lessons to Guitar practice” to propose additions to an existing playlist. Playlist changes take effect when you save the reviewed draft on the TV.
+
+For a signed-in research check, ask “Research the vLLM PagedAttention paper online and find introductory videos.” Review the public search terms shown on the TV, then approve the lookup. The helper starts a separate, temporary Codex turn containing just that topic. The web lookup receives no local playlists, video IDs, captions, candidate videos, or previous conversation. The TV can use the returned terms to search for playable YouTube videos.
+
+The helper verifies live search mode, provider capability, and completed native web-search results. It accepts up to six source links that match URLs or reference IDs from those results. The model’s proposed link alone cannot establish a source. Six web actions and a two-minute timeout bound each research job. If the CLI or subscription cannot provide results, the TV receives an explicit error. [Pinned OpenAI web-search implementation](https://github.com/openai/codex/blob/rust-v0.172.0/codex-rs/ext/web-search/src/tool.rs)
 
 ## Timed captions
 
@@ -38,7 +46,7 @@ Importing replaces that video’s track. Imported cues retain their video ID, st
 
 ## Request boundaries
 
-The assistant process runs as a non-root user inside a read-only container with a temporary filesystem, one dedicated Docker volume, and a 90-second deadline. The host mounts no personal directory, repository, Docker socket, or Google credential. Codex receives each request as JSON in its stdio protocol with empty execution environments, no dynamic tools, a read-only sandbox, and approval disabled. Its pinned local model catalog removes shell, patch, and tool-search capabilities. The CLI settings disable web search, browser, computer use, apps, plugins, subagents, hooks, image handling, and remote control. A provider confirmation request ends the operation. Network connectivity in the container lets the CLI contact ChatGPT for sign-in, quota, and inference.
+The assistant process runs as a non-root user inside a read-only container with a temporary filesystem, one dedicated Docker volume, and a 90-second deadline for ordinary requests. Public research has a 120-second deadline. The host mounts no personal directory, repository, Docker socket, or Google credential. Codex receives each request as JSON in its stdio protocol with empty execution environments, no dynamic tools, a read-only sandbox, and approval disabled. Its pinned local model catalog removes shell, patch, and tool-search capabilities. Browser control, computer use, apps, plugins, subagents, hooks, image handling, and remote control are disabled in both modes. Public research alone enables the official CLI’s standalone live web search. A provider confirmation request ends the operation. Network connectivity in the container lets the CLI contact ChatGPT for sign-in, quota, and inference.
 
 The helper processes one model request at a time and accepts 30 requests per ten minutes. Each request accepts up to 50 videos, 256 cues, 60,000 UTF-8 bytes of caption text, and a 2,000-byte prompt within a 192 KiB JSON body. Returned selections must use supplied candidate IDs, and cited cue indices must exist in the supplied track excerpt. Unsupported jumps yield an empty object. Summary points are model-generated interpretations with cue references for playback verification.
 

@@ -3,9 +3,12 @@ import json
 import math
 import re
 
+from container.runner import public_source
+
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 MAX_BODY = 192 * 1024
-KINDS = ("query", "playlist", "summary", "jump", "followup")
+PLAYLIST_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+KINDS = ("assist", "research", "query", "playlist", "summary", "jump", "followup")
 
 
 class Problem(Exception):
@@ -35,8 +38,25 @@ def video_id(value):
 
 
 def valid_request(data):
+    kind = data.get("kind") if type(data) is dict else None
+    if kind in ("assist", "research"):
+        allowed = ("candidates", "cues", "playlists") if kind == "assist" else ("candidates", "cues")
+        fields(data, ("kind", "prompt"), allowed)
+        string(data["prompt"], 2000)
+        require(data.get("candidates", []) == [] and data.get("cues", []) == [],
+                "This request accepts only the question and its permitted context.")
+        lists = data.get("playlists", [])
+        require(type(lists) is list and len(lists) <= 40, "Supply at most 40 playlists.")
+        ids = set()
+        for item in lists:
+            fields(item, ("id", "title"))
+            identifier = item["id"]
+            require(type(identifier) is str and PLAYLIST_ID.fullmatch(identifier) and identifier.lower() not in ids,
+                    "Supply unique playlist UUIDs.")
+            ids.add(identifier.lower())
+            string(item["title"], 256)
+        return {"candidates": [], "cues": [], **data}
     fields(data, ("kind", "prompt", "candidates", "cues"), ("videoID",))
-    kind = data["kind"]
     require(kind in KINDS, "Unknown request kind.")
     string(data["prompt"], 2000)
     if "videoID" in data:
@@ -78,10 +98,54 @@ def valid_request(data):
     return data
 
 
+def check_queries(queries):
+    require(type(queries) is list and 1 <= len(queries) <= 3, "Supply one to three search terms.")
+    seen = set()
+    for term in queries:
+        string(term, 180)
+        require(all(c.isprintable() for c in term) and term.strip().casefold() not in seen, "Invalid search term.")
+        seen.add(term.strip().casefold())
+
+
+def check_assist(data, answer):
+    fields(answer, ("action",), ("message", "queries", "title", "targetID", "research"))
+    action = answer["action"]
+    require(action in ("answer", "find", "create", "append"), "Unknown assistant action.")
+    if "message" in answer:
+        string(answer["message"], 2000)
+    if action == "answer":
+        require("message" in answer, "A direct answer needs text.")
+    if "queries" in answer:
+        check_queries(answer["queries"])
+    if "research" in answer:
+        require(type(answer["research"]) is bool, "Invalid research flag.")
+    if action != "answer" or answer.get("research"):
+        require("queries" in answer, "Supply search terms.")
+    if "title" in answer:
+        require(action == "create", "Only proposed playlists have new titles.")
+        string(answer["title"], 180)
+    if "targetID" in answer:
+        require(action == "append" and type(answer["targetID"]) is str, "Invalid append target.")
+        ids = {row["id"].lower(): row["id"] for row in data.get("playlists", [])}
+        require(answer["targetID"].lower() in ids, "Select an existing playlist.")
+        answer["targetID"] = ids[answer["targetID"].lower()]
+
+
 def valid_answer(data, answer):
     kind = data["kind"]
     try:
-        if kind == "query":
+        if kind == "assist":
+            check_assist(data, answer)
+        elif kind == "research":
+            fields(answer, ("message", "queries"), ("sources",))
+            string(answer["message"], 2000)
+            check_queries(answer["queries"])
+            require(not re.search(r"(?:https?://|www\.)", " ".join([answer["message"], *answer["queries"]]), re.I),
+                    "Source URLs belong in the checked source list.")
+            sources = answer.get("sources", [])
+            require(type(sources) is list and len(sources) <= 6 and all(public_source(url) for url in sources)
+                    and len(set(sources)) == len(sources), "Invalid source URLs.")
+        elif kind == "query":
             fields(answer, ("query",))
             string(answer["query"], 180)
             require("\n" not in answer["query"], "Use one search phrase.")

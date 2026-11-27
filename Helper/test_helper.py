@@ -218,17 +218,102 @@ class InstalledCLITest(unittest.TestCase):
                 self.skipTest("a different native CLI version is installed")
             catalog = str(Path(temp) / "models.json")
             codex.build_catalog(catalog, env)
-            args = ["codex", "app-server", "--strict-config", *codex.policy_options(catalog)]
-            subprocess.run(args + ["--print-startup-config"], stdout=subprocess.DEVNULL, env=env, check=True, timeout=5)
-            with subprocess.Popen(args + ["--stdio"], cwd=temp, env=env, stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
-                timer = threading.Timer(8, proc.kill)
-                timer.start()
-                try:
-                    session = codex.Session(proc)
-                    session.start()
-                    self.assertEqual(session.status()["state"], "signed_out")
-                    self.assertTrue(session.new_thread(temp))
-                finally:
-                    timer.cancel()
-                    proc.kill()
+            for research in (False, True):
+                args = ["codex", "app-server", "--strict-config", *codex.policy_options(catalog, research=research)]
+                subprocess.run(args + ["--print-startup-config"], stdout=subprocess.DEVNULL, env=env, check=True, timeout=5)
+                with subprocess.Popen(args + ["--stdio"], cwd=temp, env=env, stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+                    timer = threading.Timer(8, proc.kill)
+                    timer.start()
+                    try:
+                        session = codex.Session(proc)
+                        session.start()
+                        self.assertEqual(session.status()["state"], "signed_out")
+                        if research:
+                            session.check_search()
+                        self.assertTrue(session.new_thread(temp, research=research))
+                    finally:
+                        timer.cancel()
+                        proc.kill()
+
+
+class FreeTextTest(unittest.TestCase):
+    uid = "E833495E-2695-4D6C-90BF-186D82EE0CE8"
+
+    def test_assist_proposals_and_public_input(self):
+        private = [{"id": self.uid, "title": "Private watchlist"}]
+        ask = valid_request({"kind": "assist", "prompt": "Add folding tutorials to my watchlist", "playlists": private})
+        self.assertEqual(ask["cues"], [])
+        answer = valid_answer(ask, {"action": "append", "targetID": self.uid.lower(), "queries": ["paper folding"]})
+        self.assertEqual(answer["targetID"], self.uid)
+        valid_answer(ask, {"action": "create", "title": "Folding", "queries": ["origami cranes"]})
+        valid_answer(ask, {"action": "answer", "message": "What difficulty level?"})
+        for bad in [
+            {"action": "append", "targetID": "unknown", "queries": ["folding"]},
+            {"action": "append", "targetID": self.uid}, {"action": "answer", "research": True, "message": "Checking"},
+            {"action": "create", "title": "Paper", "queries": ["x", "X"]},
+            {"action": "delete", "targetID": self.uid}, {"action": "find", "queries": ["q"]*4},
+        ]:
+            with self.assertRaises(Problem):
+                valid_answer(ask, bad)
+        research = {"kind": "research", "prompt": "Current space telescope missions"}
+        self.assertEqual(valid_request(research)["candidates"], [])
+        for key, value in [("videoID", VIDEO), ("playlists", []), ("playlists", private),
+                           ("cues", [CUE]), ("candidates", [META]), ("apiKey", "x")]:
+            with self.assertRaises(Problem):
+                valid_request(dict(research, **{key: value}))
+        for lists in [[{"id": "x", "title": "valid"}], private * 41, [dict(private[0], title="t"*257)]]:
+            with self.assertRaises(Problem):
+                valid_request(dict(ask, playlists=lists))
+
+    def test_only_result_urls_can_be_cited(self):
+        evidence = codex.ResearchEvidence()
+        url = "https://science.nasa.gov/europa/"
+        evidence.observe("item/completed", {"id": "w", "action": {"type": "openPage", "url": "https://made-up.com/"},
+                        "results": [{"type": "text_result", "ref_id": "turn0search0", "url": url},
+                                    {"type": "text_result", "url": "https://192.168.1.1/admin"},
+                                    {"type": "text_result", "snippet": "https://made-up.com/"},
+                                    {"type": "unrecognized", "url": "https://never.io"}]})
+        answer = evidence.finish({"message": "Europa is an icy moon.", "queries": ["Europa orbit"],
+                                  "sources": ["https://made-up.com/", "turn0search0", url, "https://never.io"]})
+        self.assertEqual(valid_answer({"kind": "research"}, answer)["sources"], [url])
+        self.assertNotIn("sources", evidence.finish({"message": "Research", "queries": ["X"], "sources": ["bad"]}))
+        for value in ["http://nasa.gov", "https://name:pass@nasa.gov", "https://box.local", "https://localhost",
+                      "https://127.0.0.1", "https://[::1]", "https://test.org\\@localhost", "https://nasa.gov:7100"]:
+            self.assertFalse(codex.public_source(value))
+        with self.assertRaises(Problem):
+            valid_answer({"kind": "research"}, dict(answer, message="See https://made-up.com/"))
+
+    def test_live_mode_gating_and_verified_tool_use(self):
+        request = {"kind": "research", "prompt": "public topic", "candidates": [], "cues": []}
+        def run_with(item, supports_search=True):
+            thread = {"thread": {"id": "th"}, "model": codex.MODEL, "modelProvider": "openai", "approvalPolicy": "never",
+                      "runtimeWorkspaceRoots": [], "sandbox": {"type": "readOnly", "networkAccess": False}}
+            event = lambda item: {"method": "item/completed", "params": {"threadId": "th", "turnId": "t", "item": item}}
+            events = [{"id": 1, "result": {"config": {"web_search": "live"}}},
+                      {"id": 2, "result": {"webSearch": supports_search}},
+                      {"id": 3, "result": thread}]
+            if item:
+                events.append(event(item))  # Exercise asynchronous notifications that precede the turn/start response.
+            events.extend([{"id": 4, "result": {"turn": {"id": "t"}}},
+                           event({"type": "agentMessage", "text": '{"message":"Found it","queries":["Europa"],"sources":["turn0search0"]}'}),
+                           {"method": "turn/completed", "params": {"threadId": "th", "turn": {"id": "t", "status": "completed"}}}])
+            proc = SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO(b"".join(json.dumps(x).encode()+b"\n" for x in events)))
+            reply = codex.Session(proc).ask(request)
+            sent = [json.loads(x) for x in proc.stdin.getvalue().splitlines()]
+            self.assertEqual(json.loads(sent[-1]["params"]["input"][0]["text"]), {"topic": "public topic"})
+            self.assertEqual(sent[-1]["params"]["environments"], [])
+            return reply
+        item = {"type": "webSearch", "id": "w", "results": [{"type": "text_result", "ref_id": "turn0search0",
+                                                               "url": "https://science.nasa.gov/europa/"}]}
+        self.assertEqual(run_with(item)["sources"], ["https://science.nasa.gov/europa/"])
+        for invalid in [None, {"type": "commandExecution"}, {"type": "mcpToolCall"},
+                        {"type": "webSearch", "id": "w", "results": None}]:
+            with self.assertRaises(codex.Unavailable):
+                run_with(invalid)
+        with self.assertRaises(codex.Unavailable):
+            run_with(item, supports_search=False)
+        with self.assertRaises(codex.Unavailable):
+            codex.Session(None).ask(dict(request, playlists=[{"id": self.uid, "title": "private"}]))
+        self.assertIn('web_search="live"', codex.policy_options(research=True))
+        self.assertIn('web_search="disabled"', codex.policy_options(research=False))
