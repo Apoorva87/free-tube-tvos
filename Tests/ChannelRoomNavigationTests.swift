@@ -19,6 +19,12 @@ final class ChannelRoomNavigationTests: XCTestCase {
         selectWithRemote(app.buttons["Cancel"], in: app)
         XCTAssertTrue(create.waitForExistence(timeout: 6))
         remote.press(.menu)
+        selectWithRemote(app.buttons["nav-assistant"], in: app)
+        let find = app.buttons["Find videos"]
+        XCTAssertTrue(find.waitForExistence(timeout: 6))
+        XCTAssertTrue(app.buttons["Build playlist"].exists)
+        XCTAssertFalse(find.isEnabled)
+        remote.press(.menu)
         selectWithRemote(app.buttons["nav-search"], in: app)
         let ask = app.buttons["search-ask-ai"]
         XCTAssertTrue(ask.waitForExistence(timeout: 6))
@@ -148,6 +154,8 @@ final class ChannelRoomNavigationTests: XCTestCase {
         capture("Enlarged mini-player on Home")
         remote.press(.menu)
         XCTAssertTrue(app.buttons["nav-home"].waitForExistence(timeout: 5))
+        remote.press(.up)
+        XCTAssertTrue(app.buttons["nav-assistant"].hasFocus)
         remote.press(.up)
         XCTAssertTrue(app.buttons["nav-search"].hasFocus)
         remote.press(.select)

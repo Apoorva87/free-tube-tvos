@@ -1,19 +1,21 @@
 import SwiftUI
 
 enum RoomSection: String, CaseIterable {
-    case home = "Home", channels = "Channels", search = "Search", playlists = "Playlists"
+    case home = "Home", channels = "Channels", search = "Search", playlists = "Playlists", assistant = "Ask AI"
+    static let sidebarOrder: [Self] = [.search, .assistant, .home, .channels, .playlists]
     var icon: String {
         switch self {
         case .home: "house.fill"
         case .channels: "rectangle.stack.fill"
         case .search: "magnifyingglass"
+        case .assistant: "sparkles"
         case .playlists: "list.and.film"
         }
     }
 }
 
 enum RoomBrowseFocus: Hashable {
-    case menu, featured, newPlaylist, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
+    case menu, featured, newPlaylist, assistantPrompt, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
 }
 
 private struct RoomFocusKey: EnvironmentKey {
@@ -81,6 +83,8 @@ private struct RoomShell: View {
                         case .channels:
                             RoomSubscriptionsView(library: library, focus: $focus, play: play, openChannel: { channel = $0 },
                                                   findChannels: { section = .search })
+                        case .assistant:
+                            RoomAskView(inSidebar: true)
                         case .playlists:
                             RoomPlaylistsView(focus: $focus, play: onPlay)
                         case .search:
@@ -107,6 +111,7 @@ private struct RoomShell: View {
                     case .home: .featured
                     case .channels: .subscriptionFilter(nil)
                     case .playlists: .newPlaylist
+                    case .assistant: .assistantPrompt
                     case .search: .menu
                     }
                     closeMenu(to: lastTile ?? first)
@@ -165,12 +170,12 @@ private struct RoomShell: View {
             }
             .buttonStyle(RailButtonStyle(selected: false)).focused($focus, equals: .account)
             .accessibilityIdentifier("account").padding(.bottom, 18)
-            ForEach([RoomSection.search, .home, .channels, .playlists], id: \.self) { item in
+            ForEach(RoomSection.sidebarOrder, id: \.self) { item in
                 Button { choose(item) } label: {
                     Label(item == .channels ? "Subscriptions" : item.rawValue, systemImage: item.icon)
                 }
                 .buttonStyle(RailButtonStyle(selected: section == item)).focused($focus, equals: .navigation(item))
-                .accessibilityIdentifier("nav-" + item.rawValue.lowercased())
+                .accessibilityIdentifier(item == .assistant ? "nav-assistant" : "nav-" + item.rawValue.lowercased())
             }
             if viewing.presentation == .mini {
                 Button {
@@ -213,6 +218,7 @@ private struct RoomShell: View {
         case .home: library.videos.isEmpty ? nil : .featured
         case .channels: .subscriptionFilter(nil)
         case .playlists: .newPlaylist
+        case .assistant: .assistantPrompt
         case .search: nil
         }
         closeMenu(to: retained ?? first ?? .menu)
@@ -310,7 +316,7 @@ private struct RoomBrowseRail: View {
             VStack(spacing: 39) {
                 RoomAvatar(channel: profile, symbol: "person.fill", size: 50)
                     .padding(.bottom, 22)
-                ForEach([RoomSection.search, .home, .channels, .playlists], id: \.self) { item in
+                ForEach(RoomSection.sidebarOrder, id: \.self) { item in
                     Image(systemName: item.icon).font(.system(size: 29, weight: .semibold))
                         .foregroundStyle(item == section ? .white : RoomPalette.muted)
                 }

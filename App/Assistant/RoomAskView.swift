@@ -18,6 +18,8 @@ private struct CitedAnswer: Identifiable {
 @MainActor
 struct RoomAskView: View {
     let video: ChannelVideo?
+    let inSidebar: Bool
+    @Environment(\.roomBrowseFocus) private var browseFocus
     @Environment(RoomAIHelper.self) private var helper
     @Environment(ChannelAccount.self) private var account
     @Environment(RoomViewingSession.self) private var viewing
@@ -33,10 +35,12 @@ struct RoomAskView: View {
     @State private var draft: AskDraft?
     @State private var editing: AskDraft?
     @State private var showPairing = false
+    @State private var askingAbout: ChannelVideo?
     @State private var offerSearch = false
     @State private var evidenceItem: AVPlayerItem?
 
-    init(video: ChannelVideo? = nil, initialPrompt: String = "") {
+    init(video: ChannelVideo? = nil, initialPrompt: String = "", inSidebar: Bool = false) {
+        self.inSidebar = inSidebar
         self.video = video
         _prompt = State(initialValue: initialPrompt)
     }
@@ -44,20 +48,32 @@ struct RoomAskView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                HStack {
-                    Text("Ask AI").font(.largeTitle.bold())
-                    Spacer()
-                    Button("Done") { dismiss() }
+                if !inSidebar {
+                    HStack {
+                        Text("Ask AI").font(.largeTitle.bold())
+                        Spacer()
+                        Button("Done") { dismiss() }
+                    }
                 }
                 if let video { Text(video.title).font(.title3).lineLimit(2) }
                 Label(helper.statusText, systemImage: helper.isReady ? "checkmark.circle" : "laptopcomputer")
                     .font(.headline)
                 Button(helper.isReady ? "Helper settings" : "Connect or check helper") { showPairing = true }
                 if video == nil {
-                    TextField("Build a 45-minute playlist that teaches KV cache", text: $prompt)
-                        .onSubmit { begin(.playlist) }
-                    Button("Build playlist") { begin(.playlist) }
-                        .disabled(!helper.isReady || trimmed.isEmpty || progress != nil)
+                    searchField
+                    HStack(spacing: 20) {
+                        Button("Find videos") { begin(.find) }
+                        Button("Build playlist") { begin(.playlist) }
+                    }
+                    .disabled(!helper.isReady || trimmed.isEmpty || progress != nil)
+                    if inSidebar, let current = viewing.video {
+                        Button { askingAbout = current } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label("Ask about the current video", systemImage: "play.rectangle")
+                                Text(current.title).font(.caption).lineLimit(1)
+                            }
+                        }
+                    }
                 } else {
                     TextField("What should I find in the captions?", text: $prompt)
                         .onSubmit { begin(.jump) }
@@ -100,7 +116,7 @@ struct RoomAskView: View {
                     Button("Search related videos") { begin(.related) }.disabled(progress != nil)
                 }
             }
-            .frame(maxWidth: 1430, alignment: .leading).padding(48)
+            .frame(maxWidth: 1430, alignment: .leading).padding(inSidebar ? 16 : 48)
         }
         .accessibilityIdentifier("ask-ai")
         .onAppear { helper.start() }
@@ -108,6 +124,7 @@ struct RoomAskView: View {
         .onChange(of: viewing.video?.id) { _, current in
             if let video, current != video.id { cancel(); dismiss() }
         }
+        .sheet(item: $askingAbout) { current in RoomAskView(video: current) }
         .sheet(isPresented: $showPairing) { RoomPairingView(helper: helper) }
         .sheet(item: $editing) { draft in
             RoomPlaylistDraftView(title: draft.title, videos: draft.picks,
@@ -115,8 +132,18 @@ struct RoomAskView: View {
         }
     }
 
+    @ViewBuilder private var searchField: some View {
+        let field = TextField("Find a video or describe a playlist", text: $prompt)
+            .onSubmit {
+                let asksForPlaylist = trimmed.localizedCaseInsensitiveContains("playlist") || RoomAIValidation.targetSeconds(in: trimmed) != nil
+                begin(asksForPlaylist ? .playlist : .find)
+            }
+        if inSidebar, let browseFocus { field.focused(browseFocus, equals: .assistantPrompt) }
+        else { field }
+    }
+
     private var trimmed: String { prompt.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private enum Action { case playlist, summary, jump, followup, related }
+    private enum Action { case find, playlist, summary, jump, followup, related }
 
     private func cancel() {
         requestID = UUID()
@@ -127,7 +154,7 @@ struct RoomAskView: View {
 
     private func begin(_ action: Action) {
         guard action == .related || helper.isReady else { notice = helper.statusText; return }
-        guard (action != .jump && action != .playlist) || !trimmed.isEmpty else { return }
+        guard (action != .jump && action != .playlist && action != .find) || !trimmed.isEmpty else { return }
         cancel()
         let id = requestID
         let question = trimmed
@@ -148,7 +175,7 @@ struct RoomAskView: View {
                     suggestions = Array(result.videos.prefix(8))
                 case .summary, .jump:
                     try await analyzeCaptions(action, question: question, id: id, item: item)
-                case .playlist, .followup:
+                case .find, .playlist, .followup:
                     try await findVideos(action, question: question, id: id, item: item)
                 }
             } catch {
@@ -168,13 +195,12 @@ struct RoomAskView: View {
     }
 
     private func findVideos(_ action: Action, question: String, id: UUID, item: AVPlayerItem?) async throws {
-        let instruction = action == .playlist ? question : "Find a good follow-up to " + (video?.title ?? "")
-        let search = try await helper.ask(AIRequest(kind: .query, prompt: RoomAIValidation.clipped(instruction, bytes: 2000)))
-        try check(id, item: item)
-        guard let term = RoomAIValidation.text(search.query, maxBytes: 256) else { throw RoomAIError.invalidProposal }
-        progress = "Searching for “\(term)”…"
-        let results = try await RoomAskCatalog.search(term, account: account, relatedTo: video)
-        try check(id, item: item)
+        let instruction = action == .followup ? "Find a good follow-up to " + (video?.title ?? "") : question
+        let (term, results) = try await matchingVideos(instruction: instruction, id: id, item: item)
+        if action == .find {
+            suggestions = Array(results.videos.prefix(12))
+            return
+        }
         progress = "Reviewing \(results.videos.count) search results…"
         let proposal = try await helper.ask(AIRequest(kind: action == .playlist ? .playlist : .followup,
             prompt: RoomAIValidation.clipped(instruction, bytes: 2000), videoID: video?.id, candidates: results.candidates))
@@ -197,6 +223,29 @@ struct RoomAskView: View {
         }
         draft = result
         editing = result
+    }
+
+    private func matchingVideos(instruction: String, id: UUID, item: AVPlayerItem?) async throws -> (String, RoomAskMatches) {
+        let initial = RoomAIValidation.clipped(instruction, bytes: 2000)
+        var request = initial
+        var previous: String?
+        for _ in 0..<2 {
+            let search = try await helper.ask(AIRequest(kind: .query, prompt: request))
+            try check(id, item: item)
+            guard let term = RoomAIValidation.text(search.query, maxBytes: 256) else { throw RoomAIError.invalidProposal }
+            if let previous, term.caseInsensitiveCompare(previous) == .orderedSame { break }
+            progress = "Searching for “\(term)”…"
+            do {
+                let results = try await RoomAskCatalog.search(term, account: account, relatedTo: video)
+                try check(id, item: item)
+                return (term, results)
+            } catch RoomAIError.noSearchResults {
+                try check(id, item: item)
+                previous = term
+                request = RoomAIValidation.clipped("No videos matched “\(term)”. Use a broader search with only the core topic. Viewer request: " + initial, bytes: 2000)
+            }
+        }
+        throw RoomAIError.noSearchResults
     }
 
     private func analyzeCaptions(_ action: Action, question: String, id: UUID, item: AVPlayerItem?) async throws {
@@ -243,7 +292,7 @@ struct RoomAskView: View {
 
     private func play(_ suggestion: ChannelVideo) {
         guard suggestions.contains(where: { $0.id == suggestion.id }) else { return }
-        dismiss()
+        if !inSidebar { dismiss() }
         viewing.open(suggestion, in: suggestions)
     }
 }
