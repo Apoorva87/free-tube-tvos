@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import AVFoundation
 import Combine
 
@@ -70,6 +71,7 @@ struct RoomAskView: View {
     @State private var offerSearch = false
     @State private var captionAction: Action?
     @State private var transcript = ""
+    @State private var captionFocus: TalkFocus = .publicCaptions
     @State private var evidenceItem: AVPlayerItem?
     @State private var activeQuestion: String?
     @State private var reply: String?
@@ -85,23 +87,29 @@ struct RoomAskView: View {
         _isTalking = State(initialValue: startsTalking && video != nil)
     }
 
-    private enum TalkFocus: Hashable { case prompt, send, audio }
+    private enum TalkFocus: Hashable { case prompt, send, audio, publicCaptions, related }
 
     private var talkComposer: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Open the question field to type or dictate. Hold the Siri Remote microphone button while you speak, then release. Choose Done, review your question, and select Send to hear the reply.")
+            Text("Open the question field to type or dictate. Hold the Siri Remote microphone button while you speak, then release. Review your question and choose Send to hear the reply.")
                 .font(.callout).foregroundStyle(.secondary)
             TextField(talkReplies.isEmpty ? "Ask a question about this video" : "Ask a follow-up", text: $prompt)
                 .focused($talkFocus, equals: .prompt)
-                .submitLabel(.done)
-                .onSubmit { if !trimmed.isEmpty && helper.isReady { talkFocus = .send } }
+                .submitLabel(.send)
+                .onSubmit {
+                    // The full-screen tvOS editor can retain first responder after Return.
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                    to: nil, from: nil, for: nil)
+                    talkFocus = .send
+                    submitTalk()
+                }
                 .accessibilityIdentifier("video-talk-prompt")
                 .onAppear { talkFocus = .prompt }
 
             HStack(spacing: 20) {
-                Button("Send") { begin(.talk) }
+                Button(progress == nil ? "Send" : "Sending…") { submitTalk() }
                     .focused($talkFocus, equals: .send)
-                    .disabled(trimmed.isEmpty || !helper.isReady || progress != nil)
+                    .disabled(trimmed.isEmpty)
                     .accessibilityIdentifier("video-talk-send")
                 if !talkReplies.isEmpty {
                     Button(action: toggleReading) {
@@ -195,7 +203,7 @@ struct RoomAskView: View {
                     }
                     .disabled(!helper.isReady || progress != nil)
                 }
-                if !isTalking || !helper.isReady { helperSettings }
+                if !isTalking { helperSettings }
                 if let progress {
                     HStack {
                         ProgressView()
@@ -204,14 +212,17 @@ struct RoomAskView: View {
                     }
                 }
                 if let notice { Text(notice).foregroundStyle(.secondary) }
+                if isTalking && !helper.isReady { helperSettings }
                 if let captionAction, let video {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Use captions for this video").font(.headline)
                         Text("If you have permission to use this track with Ask AI, the paired helper can check YouTube or use a transcript you paste with timestamps.")
                             .font(.caption).foregroundStyle(.secondary)
-                        Button("Use public captions") { begin(captionAction, permitted: true) }
+                        Button(isTalking ? "Use public captions and answer" : "Use public captions") { begin(captionAction, permitted: true) }
                             .disabled(!helper.isReady)
                             .accessibilityIdentifier("video-public-captions")
+                            .focused($talkFocus, equals: .publicCaptions)
+                            .onAppear { if isTalking && captionFocus == .publicCaptions { talkFocus = .publicCaptions } }
                         TextField("Paste timestamped transcript", text: $transcript)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .accessibilityIdentifier("video-pasted-transcript")
@@ -257,6 +268,8 @@ struct RoomAskView: View {
                 if video != nil && (offerSearch || !helper.isReady) {
                     Button("Search related videos") { begin(.related) }.disabled(progress != nil)
                         .accessibilityIdentifier("video-related-search")
+                        .focused($talkFocus, equals: .related)
+                        .onAppear { if isTalking && captionFocus == .related { talkFocus = .related } }
                 }
                 if isTalking { talkHistory }
                 if isTalking && helper.isReady { helperSettings }
@@ -356,6 +369,16 @@ struct RoomAskView: View {
     private var trimmed: String { prompt.trimmingCharacters(in: .whitespacesAndNewlines) }
     private enum Action { case assist, planResearch, find, playlist, summary, captionQuestion, talk, jump, followup, related }
 
+    private func submitTalk() {
+        guard progress == nil, !trimmed.isEmpty else { return }
+        guard helper.isReady else {
+            speaker.stop()
+            showPairing = true
+            return
+        }
+        begin(.talk)
+    }
+
     private func startTalking() {
         if talkItem !== viewing.playback.player.currentItem {
             conversation.reset()
@@ -414,6 +437,7 @@ struct RoomAskView: View {
         suggestions = []
         offerSearch = false
         captionAction = nil
+        captionFocus = .publicCaptions
         approval = nil
         chooser = nil
         appendFlow = nil
@@ -627,9 +651,10 @@ struct RoomAskView: View {
                 conversation.reset()
                 talkReplies.removeAll()
             }
+            captionFocus = permitted ? .related : .publicCaptions
             captionAction = action
             notice = permitted ? "YouTube didn’t supply a readable timestamped track. Paste a transcript or search related videos." :
-                "Your paired helper has no captions for this video yet."
+                "Your helper needs a timestamped caption track for this video."
             offerSearch = true
             return
         }

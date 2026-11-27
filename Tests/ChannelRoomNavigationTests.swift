@@ -88,10 +88,39 @@ final class ChannelRoomNavigationTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["video-talk-send"].isEnabled)
         selectWithRemote(field, in: app)
-        app.typeText("What is happening in this video?\n")
+        app.typeText("What is happening in this video?")
         if app.keyboards.firstMatch.exists { XCUIRemote.shared.press(.menu) }
         XCTAssertTrue(field.value as? String == "What is happening in this video?")
         XCTAssertTrue(app.buttons["video-talk-tools"].exists)
+        if app.buttons["Connect or check helper"].exists {
+            selectWithRemote(app.buttons["video-talk-send"], in: app)
+            XCTAssertTrue(app.staticTexts["Laptop helper"].waitForExistence(timeout: 6))
+        }
+    }
+
+    func testVideoTalkSendWithMissingCaptionsFocusesTheNextAction() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["FREETUBE_EMPTY_TALK_TEST"] == "1",
+                          "Requires an empty paired helper with a permitted sample caption fixture.")
+        continueAfterFailure = false
+        let app = try playSampleMovie()
+        selectTransportAction("Ask AI", in: app)
+        let field = app.textFields["video-talk-prompt"]
+        XCTAssertTrue(field.waitForExistence(timeout: 8))
+        selectWithRemote(field, in: app)
+        app.typeText("What signal marks the crossing?")
+        if app.keyboards.firstMatch.exists { XCUIRemote.shared.press(.menu) }
+        let send = app.buttons["video-talk-send"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 25), .completed)
+        selectWithRemote(send, in: app)
+        let captions = app.buttons["video-public-captions"]
+        XCTAssertTrue(captions.waitForExistence(timeout: 20))
+        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasFocus == true"), object: captions)
+        XCTAssertEqual(XCTWaiter.wait(for: [focused], timeout: 6), .completed,
+                       "Send should reveal and focus the caption choice for the current question.")
+        XCUIRemote.shared.press(.select)
+        XCTAssertTrue(app.buttons["video-talk-stop"].waitForExistence(timeout: 160))
+        XCTAssertTrue(app.descendants(matching: .any)["video-talk-citation"].exists)
     }
 
     func testPairedVideoTalkReadsTwoCitedReplies() throws {
@@ -102,16 +131,26 @@ final class ChannelRoomNavigationTests: XCTestCase {
         selectTransportAction("Ask AI", in: app)
         let field = app.textFields["video-talk-prompt"]
         XCTAssertTrue(field.waitForExistence(timeout: 8))
-        let send = app.buttons["video-talk-send"]
         let stop = app.buttons["video-talk-stop"]
         let replay = app.buttons["video-talk-replay"]
-        for question in ["What signal marks the crossing?", "What does it tell the crew?"] {
+        let questions = ["What signal marks the crossing?", "What does it tell the crew?"]
+        for (index, question) in questions.enumerated() {
             selectWithRemote(field, in: app)
-            app.typeText(question + "\n")
-            if app.keyboards.firstMatch.exists { XCUIRemote.shared.press(.menu) }
-            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
-            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 25), .completed)
-            selectWithRemote(send, in: app)
+            app.typeText(question)
+            if index == 0 {
+                app.typeText("\n")
+            } else {
+                // tvOS places its submit button beside the keyboard in a separate window.
+                let keyboardSend = app.buttons.matching(NSPredicate(
+                    format: "label ==[c] 'Send' AND identifier != %@", "video-talk-send"
+                )).firstMatch
+                XCTAssertTrue(keyboardSend.waitForExistence(timeout: 5))
+                selectWithRemote(keyboardSend, in: app)
+            }
+            let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                                      object: app.keyboards.firstMatch)
+            XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 6), .completed,
+                           "The keyboard must dismiss so the player can show progress and replies.")
             XCTAssertTrue(stop.waitForExistence(timeout: 160), "The validated answer should automatically start reading.")
             XCTAssertTrue(app.staticTexts[question].exists)
             XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "video-talk-citation").count > 0)
