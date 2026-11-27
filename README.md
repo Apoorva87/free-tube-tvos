@@ -1,8 +1,22 @@
 # Free Tube for Apple TV
 
-Free Tube is a native tvOS app for watching public YouTube videos and browsing the channels you follow. Discover opens first with personalized recommendations, recent uploads grouped by channel, and public categories. You can open a recommendation without subscribing, watch at 1.5× or 2×, or keep the current video playing in the corner while you look for another. Search, playback, and custom playlists run on the TV. The optional **Ask AI** feature connects to a paired computer on your home network.
+Free Tube is an independent YouTube client for Apple TV. Open **Discover** to see what your channels just published and find new creators through your subscriptions and recent likes. Select a thumbnail to play it, hold Select to save it to a playlist, or keep it playing in the corner while you search.
 
-**[Try the interactive walkthrough →](https://apoorva87.github.io/free-tube-tvos/)**
+[Try the interactive walkthrough](https://apoorva87.github.io/free-tube-tvos/) · [Build for Apple TV](#run-in-xcode) · [Connect your subscriptions](#connect-your-subscriptions)
+
+## Start in Discover
+
+On a fresh install, **Explore** brings together picks from Music, Gaming, News, Sports, and Live. Choose a category across the top to browse more of it. You can start watching immediately or follow a public channel from Search.
+
+Once you follow channels locally or connect your YouTube account, Discover opens on **For you**. Its rows appear in this order when results are available.
+
+| Row | What you’ll find |
+| --- | --- |
+| **Recommended for you** | Videos from new creators related to your recent YouTube likes. Free Tube can also use the topics of channels you follow. |
+| **More like your subscriptions** | Suggestions related to recent uploads from several followed channels. Both recommendation rows filter out repeats, recent likes, and videos already in your Free Tube history. |
+| **One row per channel** | Up to ten recent uploads from each followed channel with available videos. The channel with the newest upload appears first. |
+
+The native tvOS player supports speeds from 0.5× to 2×. Search, viewing history, and playlists work directly on the TV. **Ask AI** adds video research and playlist drafting through an optional paired computer.
 
 ## Run in Xcode
 
@@ -26,14 +40,13 @@ The TV stores manually entered client settings and the Google refresh token in i
 
 | What you want to do | How |
 | --- | --- |
-| Explore new creators | Open **Discover → For you**. Browse **Recommended for you** and **More like your subscriptions**, then move down to individual channels. Select a tile to play it. |
-| Browse by category | From the top of Discover, select **Explore**, **Music**, **Gaming**, **News**, **Sports**, or **Live**. Press **Down** to browse the videos. |
+| Browse Discover | Choose a category, press **Down** to enter its rows, then **Left** or **Right** to browse thumbnails. Press **Select** to play a recommendation without following its channel. |
 | Move down the sidebar | From the profile icon, press **Down** for Discover, then Home, Subscriptions, Playlists, History, Search and Ask AI. |
 | Return to your channels | Press **Back** while browsing and select **Subscriptions**. Focus a channel to filter its uploads. Press **Right** to return to the videos. |
 | Adjust playback speed | Press **Up** during playback and choose the speedometer. Available rates are 0.5×, 1×, 1.25×, 1.5× and 2×. |
 | Search while watching | Choose **Watch while browsing** in the player, then open **Search**. The in-app mini-player uses one-third of the screen width. The tvOS keyboard covers the picture temporarily during text entry. |
 | Leave a video | Press **Back** to stop full-screen playback and return to browsing. If a transport menu is open, Back closes that menu first. |
-| Watch something again | Open **History** for videos played in Free Tube on this TV. Select a thumbnail to replay it. History starts with this update, keeps your latest watches first, and is separate for each YouTube profile and for signed-out viewing. |
+| Watch something again | Open **History** and select a thumbnail. Your latest watches come first. Each YouTube profile and signed-out viewing have their own history on this TV. |
 | Go back to full screen | Choose **Expand video** in the mini-player or sidebar. Playback keeps its current position and rate. **Close video** stops it. |
 
 ## Custom playlists
@@ -51,7 +64,7 @@ Open **Ask AI** from the sidebar or the Search screen. Select **Connect or check
 
 ## How it works
 
-- **Discover.** The read-only Google connection supplies subscriptions and recent likes. **For you** finds videos related to recent likes and uploads from followed channels, and uses channel topics when related results are sparse. It filters out watched videos, recent likes and duplicate recommendations. Channels with available uploads each get a row, ordered by their newest video. With no sign-in or local follows, Discover opens in **Explore**.
+- **Recommendations.** The TV interleaves results from several source videos so one popular upload does not fill a whole row. If a source returns too few videos, Discover can draw on followed-channel topics. Recommendations are cached per profile on the TV.
 - **Player.** The app resolves an available public stream and plays it with AVKit. This direct playback path does not request a separate YouTube ad player. Stream availability varies, and ads embedded in the video are part of the picture. When playback is unavailable, **Open in YouTube** hands the video to the official app, where YouTube’s own ad settings apply.
 - **Browsing during playback.** A shared playback session keeps the same AVPlayer item alive while the surface moves between full screen and the corner. The mini-player works inside Free Tube.
 
