@@ -26,7 +26,7 @@ Import a video-relative WebVTT file whose captions you own or have permission to
 python3 Helper/helper.py import-captions dQw4w9WgXcQ ./captions.vtt --permitted
 ```
 
-Importing replaces that video’s track. Imported cues retain their video ID, start and end times, and cue indices. The TV obtains the selected track over the paired connection. The laptop sends only the cues included in the TV’s explicit assistant request to Codex.
+Importing replaces that video’s track. Imported cues retain their video ID, start and end times, and cue indices. The TV obtains the selected track over the paired connection. The laptop checks each excerpt against its current imported track, including the exact text and times, before sending the requested cues to Codex.
 
 ## Status and data
 

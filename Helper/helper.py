@@ -172,6 +172,10 @@ class Service:
 
     def ask(self, data):
         data = valid_request(data)
+        if data["cues"]:
+            approved = {cue["index"]: cue for cue in load_captions(self.directory, data["videoID"])}
+            require(all(approved.get(cue["index"]) == cue for cue in data["cues"]),
+                    "These excerpts do not match the current approved caption track. Check captions again.")
         if not self.lock.acquire(blocking=False):
             raise Problem(429, "busy", "The helper is finishing another request. Try again shortly.")
         try:

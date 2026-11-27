@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Network
 import os
 import Security
 
@@ -86,41 +87,62 @@ enum RoomHelperError: LocalizedError {
     }
 }
 
-final class RoomHelperTrustDelegate: NSObject, URLSessionTaskDelegate {
-    let fingerprint: String
-    let host: String
-    let rejected = OSAllocatedUnfairLock(initialState: false)
+/// The helper serves one fixed-length JSON response per TLS connection.
+struct RoomHelperHTTPResponse {
+    private var buffer = Data()
+    private var head: (status: Int, length: Int)?
+    private static let separator = Data([13, 10, 13, 10])
 
-    init(fingerprint: String, host: String) {
-        self.fingerprint = fingerprint
-        self.host = host
-    }
-
-    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
-                    completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        let space = challenge.protectionSpace
-        guard space.authenticationMethod == NSURLAuthenticationMethodServerTrust else {
-            completionHandler(.rejectProtectionSpace, nil)
-            return
+    mutating func receive(_ chunk: Data, end: Bool, limit: Int) throws -> Data? {
+        buffer.append(chunk)
+        if head == nil {
+            guard let divider = buffer.range(of: Self.separator) else {
+                guard buffer.count <= 8192, !end else { throw RoomHelperError.invalidResponse }
+                return nil
+            }
+            guard divider.upperBound <= 8192,
+                  let text = String(data: buffer[..<divider.lowerBound], encoding: .ascii) else {
+                throw RoomHelperError.invalidResponse
+            }
+            head = try Self.parseHead(text, limit: limit)
+            buffer = Data(buffer[divider.upperBound...])
         }
-        guard accepts(space.serverTrust, from: space.host), let trust = space.serverTrust else {
-            rejected.withLock { $0 = true }
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
+        guard let head, buffer.count <= head.length else { throw RoomHelperError.invalidResponse }
+        guard buffer.count == head.length else {
+            if end { throw RoomHelperError.invalidResponse }
+            return nil
         }
-        completionHandler(.useCredential, URLCredential(trust: trust))
+        guard (200..<300).contains(head.status) else {
+            let failure = try? JSONDecoder().decode(RoomHelperTransport.Failure.self, from: buffer)
+            throw RoomHelperError.http(head.status, failure?.error, RoomHelperTransport.shortDetail(failure?.detail))
+        }
+        return buffer
     }
 
-    func accepts(_ trust: SecTrust?, from challengeHost: String) -> Bool {
-        let peer = challengeHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        guard peer == host || peer.removingPercentEncoding == host, let trust,
-              let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else { return false }
-        return RoomHelperTransport.fingerprint(of: SecCertificateCopyData(leaf) as Data) == fingerprint
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        completionHandler(nil)
+    private static func parseHead(_ text: String, limit: Int) throws -> (Int, Int) {
+        let lines = text.components(separatedBy: "\r\n")
+        let statusLine = lines[0].split(separator: " ", maxSplits: 2)
+        guard statusLine.count >= 2, ["HTTP/1.0", "HTTP/1.1"].contains(statusLine[0]),
+              statusLine[1].utf8.count == 3, statusLine[1].utf8.allSatisfy({ (48...57).contains($0) }),
+              let status = Int(statusLine[1]), (200...599).contains(status) else { throw RoomHelperError.invalidResponse }
+        guard !(300..<400).contains(status) else { throw RoomHelperError.http(status, nil, "The helper returned a redirect.") }
+        var length: Int?
+        for line in lines.dropFirst() {
+            guard line.utf8.allSatisfy({ $0 == 9 || (32...126).contains($0) }),
+                  let colon = line.firstIndex(of: ":"), colon != line.startIndex else { throw RoomHelperError.invalidResponse }
+            let key = line[..<colon].lowercased()
+            guard key.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }),
+                  key != "transfer-encoding", key != "content-encoding" else { throw RoomHelperError.invalidResponse }
+            if key == "content-length" {
+                let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                guard length == nil, !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }),
+                      let count = Int(value) else { throw RoomHelperError.invalidResponse }
+                length = count
+            }
+        }
+        guard let length else { throw RoomHelperError.invalidResponse }
+        guard length <= ((200..<300).contains(status) ? limit : 8192) else { throw RoomHelperError.tooLarge }
+        return (status, length)
     }
 }
 
@@ -129,74 +151,153 @@ enum RoomHelperTransport {
         SHA256.hash(data: certificateDER).map { String(format: "%02x", $0) }.joined()
     }
 
+    static func accepts(_ trust: SecTrust, fingerprint: String) -> Bool {
+        guard let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else { return false }
+        return Self.fingerprint(of: SecCertificateCopyData(leaf) as Data) == fingerprint
+    }
+
     struct Failure: Decodable {
         let error: String?
         let detail: String?
     }
 
-    /// The base URL is constructed exclusively from an address returned by local Bonjour discovery.
+    /// Use only the validated numeric address from Bonjour. Network.framework opens a fresh TLS connection for each request.
     static func send(base: URL, path: String, fingerprint: String, token: String?, body: Data?,
                      timeout: TimeInterval, limit: Int) async throws -> Data {
-        guard let host = base.host(percentEncoded: false), base.scheme == "https" else { throw RoomHelperError.offline }
-        let numericHost = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        guard RoomHelperDiscovery.isLANHost(numericHost) else { throw RoomHelperError.offline }
-        let delegate = RoomHelperTrustDelegate(fingerprint: fingerprint, host: numericHost)
-        let config = URLSessionConfiguration.ephemeral
-        config.urlCache = nil
-        config.urlCredentialStorage = nil
-        config.httpCookieStorage = nil
-        config.httpShouldSetCookies = false
-        config.connectionProxyDictionary = [:]
-        config.waitsForConnectivity = false
-        config.tlsMinimumSupportedProtocolVersion = .TLSv12
-        config.timeoutIntervalForRequest = timeout
-        config.timeoutIntervalForResource = timeout
-        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        var request = URLRequest(url: base.appendingPathComponent(path))
-        request.httpMethod = body == nil ? "GET" : "POST"
-        request.httpBody = body
-        if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-        if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
-
-        do {
-            return try await withTaskCancellationHandler {
-                let (bytes, response) = try await session.bytes(for: request)
-                guard let http = response as? HTTPURLResponse else { throw RoomHelperError.invalidResponse }
-                let succeeded = (200..<300).contains(http.statusCode)
-                let maxSize = succeeded ? limit : 8192
-                guard http.expectedContentLength <= maxSize else { throw RoomHelperError.tooLarge }
-                var data = Data()
-                for try await byte in bytes {
-                    guard data.count < maxSize else { throw RoomHelperError.tooLarge }
-                    data.append(byte)
-                    if data.count.isMultiple(of: 4096) { try Task.checkCancellation() }
-                }
-                try Task.checkCancellation()
-                guard succeeded else {
-                    let failure = try? JSONDecoder().decode(Failure.self, from: data)
-                    throw RoomHelperError.http(http.statusCode, failure?.error, shortDetail(failure?.detail))
-                }
-                return data
-            } onCancel: {
-                session.invalidateAndCancel()
-            }
-        } catch {
-            if Task.isCancelled { throw CancellationError() }
-            if delegate.rejected.withLock({ $0 }) { throw RoomHelperError.trust }
-            if let network = error as? URLError {
-                if network.code == .timedOut {
-                    throw RoomHelperError.message("The laptop took too long to respond. Check the helper and try again.")
-                }
-                throw RoomHelperError.offline
-            }
-            throw error
+        guard base.scheme == "https", let rawHost = base.host(percentEncoded: false),
+              let portNumber = base.port, let rawPort = UInt16(exactly: portNumber), rawPort != 0,
+              let port = NWEndpoint.Port(rawValue: rawPort) else { throw RoomHelperError.offline }
+        let host = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        guard RoomHelperDiscovery.isLANHost(host) else { throw RoomHelperError.offline }
+        let endpoint = NWEndpoint.Host(host)
+        switch endpoint {
+        case .ipv4, .ipv6: break
+        default: throw RoomHelperError.offline
         }
+        let fixedPaths = ["v1/pair", "v1/ask", "v1/status"]
+        guard fixedPaths.contains(path) || (path.hasPrefix("v1/captions/") && RoomAIValidation.validID(String(path.dropFirst("v1/captions/".count)))) else {
+            throw RoomHelperError.invalidResponse
+        }
+        let authority = host.contains(":") ? "[\(host.prefix { $0 != "%" })]:\(portNumber)" : "\(host):\(portNumber)"
+        var headers = ["\(body == nil ? "GET" : "POST") /\(path) HTTP/1.1", "Host: " + authority, "Connection: close", "Accept: application/json"]
+        if let token {
+            guard (1...512).contains(token.utf8.count), token.utf8.allSatisfy({ (33...126).contains($0) }) else { throw RoomHelperError.keychain }
+            headers.append("Authorization: Bearer " + token)
+        }
+        if let body {
+            guard body.count <= 192 * 1024 else { throw RoomHelperError.message("The request exceeds the helper’s size limit.") }
+            headers += ["Content-Type: application/json", "Content-Length: \(body.count)"]
+        }
+        var request = Data((headers.joined(separator: "\r\n") + "\r\n\r\n").utf8)
+        if let body { request.append(body) }
+        let exchange = RoomHelperTLSConnection(host: endpoint, port: port, fingerprint: fingerprint)
+        return try await exchange.run(request: request, timeout: timeout, limit: limit)
     }
 
     static func shortDetail(_ text: String?) -> String? {
         guard let text else { return nil }
         let clean = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         return clean.isEmpty ? nil : String(clean.prefix(260))
+    }
+}
+
+// All mutable exchange state is confined to queue. Each exchange owns exactly one connection and continuation.
+private final class RoomHelperTLSConnection: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "FreeTube.helper.tls")
+    private let connection: NWConnection
+    private let pinCheck = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+    private var continuation: CheckedContinuation<Data, Error>?
+    private var deadline: DispatchWorkItem?
+    private var cancelled = false
+    private var response = RoomHelperHTTPResponse()
+
+    init(host: NWEndpoint.Host, port: NWEndpoint.Port, fingerprint: String) {
+        let tls = NWProtocolTLS.Options()
+        let settings = tls.securityProtocolOptions
+        sec_protocol_options_set_min_tls_protocol_version(settings, .TLSv12)
+        sec_protocol_options_set_tls_resumption_enabled(settings, false)
+        sec_protocol_options_set_tls_tickets_enabled(settings, false)
+        sec_protocol_options_set_tls_false_start_enabled(settings, false)
+        sec_protocol_options_set_verify_block(settings, { [pinCheck] _, presented, complete in
+            let trust = sec_trust_copy_ref(presented).takeRetainedValue()
+            let matches = RoomHelperTransport.accepts(trust, fingerprint: fingerprint)
+            pinCheck.withLock { $0 = matches }
+            complete(matches)
+        }, queue)
+        let parameters = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        parameters.preferNoProxies = true
+        connection = NWConnection(host: host, port: port, using: parameters)
+    }
+
+    func run(request: Data, timeout: TimeInterval, limit: Int) async throws -> Data {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { reply in
+                queue.async {
+                    guard !self.cancelled else { reply.resume(throwing: CancellationError()); return }
+                    self.continuation = reply
+                    let deadline = DispatchWorkItem { [weak self] in
+                        self?.finish(.failure(RoomHelperError.message("The laptop took too long to respond. Check the helper and try again.")))
+                    }
+                    self.deadline = deadline
+                    self.queue.asyncAfter(deadline: .now() + timeout, execute: deadline)
+                    self.connection.stateUpdateHandler = { [weak self] state in
+                        guard let self, self.continuation != nil else { return }
+                        switch state {
+                        case .ready:
+                            guard self.pinCheck.withLock({ $0 }) == true else { self.finish(.failure(RoomHelperError.trust)); return }
+                            self.connection.requestEstablishmentReport(queue: self.queue) { [weak self] report in
+                                guard let self, self.continuation != nil else { return }
+                                guard report?.usedProxy == false else { self.finish(.failure(RoomHelperError.offline)); return }
+                                self.connection.send(content: request, completion: .contentProcessed { error in
+                                    if let error { self.fail(error) }
+                                    else { self.receive(limit: limit) }
+                                })
+                            }
+                        case .failed(let error), .waiting(let error): self.fail(error)
+                        case .cancelled: self.finish(.failure(CancellationError()))
+                        default: break
+                        }
+                    }
+                    self.connection.start(queue: self.queue)
+                }
+            }
+        } onCancel: {
+            self.queue.async {
+                self.cancelled = true
+                self.finish(.failure(CancellationError()))
+            }
+        }
+    }
+
+    private func receive(limit: Int) {
+        guard continuation != nil else { return }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { data, _, end, error in
+            do {
+                if let complete = try self.response.receive(data ?? Data(), end: end, limit: limit) {
+                    self.finish(.success(complete))
+                } else if let error { self.fail(error) }
+                else { self.receive(limit: limit) }
+            } catch { self.finish(.failure(error)) }
+        }
+    }
+
+    private func fail(_ error: NWError) {
+        if pinCheck.withLock({ $0 }) == false {
+            finish(.failure(RoomHelperError.trust))
+        } else if case .tls = error {
+            finish(.failure(RoomHelperError.message("The laptop could not establish a secure connection. Check the helper’s TLS configuration.")))
+        } else {
+            finish(.failure(RoomHelperError.offline))
+        }
+    }
+
+    private func finish(_ result: Result<Data, Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        deadline?.cancel()
+        deadline = nil
+        connection.stateUpdateHandler = nil
+        connection.cancel()
+        continuation.resume(with: result)
     }
 }
