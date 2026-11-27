@@ -87,15 +87,7 @@ struct ChannelAccountView: View {
 
     private func authorization(userCode: String, url: URL) -> some View {
         HStack(alignment: .center, spacing: 48) {
-            if let qr = Self.qrCode(for: ChannelDeviceCode.scanURL(for: url, userCode: userCode)) {
-                Image(decorative: qr, scale: 1)
-                    .interpolation(.none)
-                    .resizable()
-                    .aspectRatio(1, contentMode: .fit)
-                    .frame(width: 280, height: 280)
-                    .padding(24)
-                    .background(.white, in: RoundedRectangle(cornerRadius: 14))
-            }
+            RoomQRCode(url: ChannelDeviceCode.scanURL(for: url, userCode: userCode), size: 280)
             VStack(alignment: .leading, spacing: 14) {
                 Text("Scan with your phone").font(.title3).foregroundStyle(.primary)
                 Text("Choose the Google account and YouTube channel you use on your TV, then approve the access request on your phone.")
@@ -114,8 +106,25 @@ struct ChannelAccountView: View {
             }
         }
     }
+}
 
-    private static func qrCode(for url: URL) -> CGImage? {
+struct RoomQRCode: View {
+    let url: URL
+    let size: CGFloat
+
+    var body: some View {
+        if let image {
+            Image(decorative: image, scale: 1)
+                .interpolation(.none)
+                .resizable()
+                .aspectRatio(1, contentMode: .fit)
+                .frame(width: size, height: size)
+                .padding(24)
+                .background(.white, in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private var image: CGImage? {
         let generator = CIFilter.qrCodeGenerator()
         generator.message = Data(url.absoluteString.utf8)
         generator.correctionLevel = "M"

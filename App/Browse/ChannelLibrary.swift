@@ -4,6 +4,7 @@ import Observation
 @MainActor @Observable
 final class ChannelLibrary {
     let api: ChannelCatalog
+    private(set) var refreshID = UUID()
     private let defaults: UserDefaults
     private static let localKey = "ChannelRoom.LocalFollows.1"
     private(set) var local: [RoomChannel]
@@ -94,6 +95,8 @@ final class ChannelLibrary {
         updateMembership()
         if let data = try? JSONEncoder().encode(local) { defaults.set(data, forKey: Self.localKey) }
     }
+
+    func requestRefresh() { refreshID = UUID() }
 
     func refresh(account: ChannelAccount) async {
         let run = UUID()

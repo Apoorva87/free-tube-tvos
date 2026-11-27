@@ -8,11 +8,23 @@ struct ChannelPlayerView: View {
     static let miniHeight = miniVideoWidth * 9 / 16 + miniControlsHeight
 
     let session: RoomViewingSession
-    @State private var videoToSave: ChannelVideo?
+    @State private var sheet: PlayerSheet?
     @State private var handoffFailed = false
     @FocusState private var youtubeButtonFocused: Bool
 
     let mini: Bool
+
+    private enum PlayerSheet: Identifiable {
+        case playlist(ChannelVideo)
+        case details(RoomPlayerPanel, ChannelVideo)
+
+        var id: String {
+            switch self {
+            case .playlist(let video): "playlist-" + video.id
+            case .details(let panel, let video): panel.rawValue + "-" + video.id
+            }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,7 +32,8 @@ struct ChannelPlayerView: View {
                 Color.black
                 if let video = session.video {
                     if session.playback.phase == .playing {
-                        NativePlayer(session: session, miniature: mini) { videoToSave = video }
+                        NativePlayer(session: session, miniature: mini, showingSheet: sheet != nil,
+                                     openPanel: { sheet = .details($0, video) }, save: { sheet = .playlist(video) })
                             .accessibilityIdentifier("native-playback")
                             .accessibilityHidden(mini)
                             .allowsHitTesting(!mini)
@@ -36,6 +49,10 @@ struct ChannelPlayerView: View {
                                 ProgressView().padding(.top, 12).accessibilityLabel("Loading video")
                             case .failed(let reason):
                                 Text(reason).multilineTextAlignment(.center).foregroundStyle(.secondary)
+                                if let next = session.next {
+                                    Button("Play next video") { session.advance() }
+                                        .accessibilityIdentifier("next-after-unavailable").accessibilityValue(next.title)
+                                }
                                 HStack {
                                     Button("Open in YouTube") { Task { await openInYouTube(video) } }
                                         .focused($youtubeButtonFocused).accessibilityIdentifier("youtube-playback")
@@ -48,6 +65,11 @@ struct ChannelPlayerView: View {
                             case .finished:
                                 Button("Back to channels") { session.close() }
                             case .playing: EmptyView()
+                            }
+                            HStack(spacing: 22) {
+                                Button("View creator") { sheet = .details(.creator, video) }
+                                Button("Description") { sheet = .details(.description, video) }
+                                Button("More like this") { sheet = .details(.similar, video) }
                             }
                         }
                         .frame(maxWidth: 1050).padding(48)
@@ -72,8 +94,18 @@ struct ChannelPlayerView: View {
         .clipShape(RoundedRectangle(cornerRadius: mini ? 14 : 0))
         .overlay { if mini { RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.35), lineWidth: 1) } }
         .ignoresSafeArea(edges: mini ? [] : .all)
-        .onExitCommand(perform: mini || videoToSave != nil ? nil : { session.close() })
-        .sheet(item: $videoToSave) { video in RoomAddToPlaylistView(video: video) }
+        .onExitCommand(perform: mini || sheet != nil ? nil : { session.close() })
+        .sheet(item: $sheet) { item in
+            switch item {
+            case .playlist(let video):
+                RoomAddToPlaylistView(video: video)
+            case .details(let panel, let video):
+                RoomPlayerPanelView(panel: panel, video: video, session: session)
+                    // Scrollable content has no intrinsic height while a TV sheet is sizing itself.
+                    .frame(width: panel == .description ? 1320 : 1560, height: 860)
+            }
+        }
+        .onChange(of: session.video?.id) { sheet = nil }
         .onChange(of: session.playback.phase) { _, phase in
             handoffFailed = false
             if case .failed = phase { youtubeButtonFocused = !mini }
@@ -103,22 +135,30 @@ private struct MiniPlayerButtonStyle: ButtonStyle {
 
 @MainActor
 private struct NativePlayer: UIViewControllerRepresentable {
+    @Environment(ChannelAccount.self) private var account
+    @Environment(ChannelLibrary.self) private var library
     let session: RoomViewingSession
     let miniature: Bool
+    let showingSheet: Bool
+    let openPanel: (RoomPlayerPanel) -> Void
     let save: () -> Void
 
-    final class Coordinator: NSObject, AVPlayerViewControllerDelegate {
+    @MainActor final class Coordinator: NSObject, AVPlayerViewControllerDelegate {
         let session: RoomViewingSession
         var videoID: String?
         var next: ChannelVideo?
         var configuredSpeed: Float?
+        var showingSheet = false
+        weak var similarOverlay: UIViewController?
 
         init(session: RoomViewingSession) { self.session = session }
 
-        func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {
+        nonisolated func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {
             // AVKit has finished handling its own menus. SwiftUI owns the embedded player's presentation.
-            Task { @MainActor [session] in
-                if session.presentation == .full { session.close() }
+            Task { @MainActor [weak self, weak playerViewController] in
+                guard let self, let playerViewController, !showingSheet, playerViewController.presentedViewController == nil,
+                      session.presentation == .full, session.video?.id == videoID else { return }
+                session.close()
             }
             return false
         }
@@ -140,6 +180,16 @@ private struct NativePlayer: UIViewControllerRepresentable {
         controller.showsPlaybackControls = !miniature
         controller.view.isUserInteractionEnabled = !miniature
         let coordinator = context.coordinator
+        coordinator.showingSheet = showingSheet
+        if !miniature, let video = session.video, coordinator.videoID != video.id {
+            let panel = RoomPlayerPanelView(panel: .similar, video: video, session: session, onClose: { [weak coordinator] in
+                coordinator?.similarOverlay?.dismiss(animated: true)
+            })
+            let overlay = UIHostingController(rootView: panel.environment(account).environment(library).preferredColorScheme(.dark))
+            overlay.title = "More like this"
+            coordinator.similarOverlay = overlay
+            controller.customOverlayViewController = overlay
+        }
         guard coordinator.configuredSpeed != session.speed || coordinator.next != session.next || coordinator.videoID != session.video?.id else { return }
         coordinator.videoID = session.video?.id
         coordinator.configuredSpeed = session.speed
@@ -154,7 +204,11 @@ private struct NativePlayer: UIViewControllerRepresentable {
             session.minimize()
         }
         let add = UIAction(title: "Add to playlist", image: UIImage(systemName: "text.badge.plus")) { _ in save() }
-        var controls: [UIMenuElement] = [speed, minimize, add]
+        let similar = UIAction(title: "More like this", image: UIImage(systemName: "music.note.list")) { _ in openPanel(.similar) }
+        let creator = UIAction(title: "View creator", image: UIImage(systemName: "person.crop.circle")) { _ in openPanel(.creator) }
+        let description = UIAction(title: "Description", image: UIImage(systemName: "text.alignleft")) { _ in openPanel(.description) }
+        var controls: [UIMenuElement] = [similar, creator, description, speed, minimize, add]
+        controller.infoViewActions = [creator, description]
         if let next = session.next {
             controls.append(UIAction(title: "Next: \(next.title)", image: UIImage(systemName: "forward.end.fill")) { _ in
                 session.advance()

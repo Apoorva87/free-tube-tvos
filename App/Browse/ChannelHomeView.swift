@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 enum RoomSection: String, CaseIterable {
@@ -69,7 +70,6 @@ private struct RoomShell: View {
     @Binding var startsProfileSwitch: Bool
     @State private var channel: RoomChannel?
     @State private var pendingVideo: ChannelVideo?
-    @State private var refresh = UUID()
     @State private var menuOpen = false
     @State private var lastTile: RoomBrowseFocus?
     @State private var featureOptions = false
@@ -81,6 +81,29 @@ private struct RoomShell: View {
     }
 
     var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            browse
+            if viewing.presentation == .mini {
+                ChannelPlayerView(session: viewing, mini: true)
+                    .frame(width: ChannelPlayerView.miniVideoWidth, height: ChannelPlayerView.miniHeight)
+                    .padding(22)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onPlayPauseCommand(perform: viewing.presentation == .mini ? {
+            let player = viewing.playback.player
+            if player.timeControlStatus == .paused { player.play() } else { player.pause() }
+        } : nil)
+        .fullScreenCover(isPresented: Binding(
+            get: { viewing.presentation == .full },
+            set: { if !$0, viewing.presentation == .full { viewing.close() } }
+        )) {
+            ChannelPlayerView(session: viewing, mini: false)
+        }
+        .environment(library)
+    }
+
+    private var browse: some View {
         NavigationStack {
             ZStack(alignment: .leading) {
                 VStack(alignment: .leading, spacing: 20) {
@@ -149,7 +172,7 @@ private struct RoomShell: View {
             Button("Follow and play") {
                 let owner = RoomChannel(id: video.channelID, title: video.channelTitle)
                 if !library.followed.contains(owner.id) { library.toggle(owner, preview: []) }
-                refresh = UUID()
+                library.requestRefresh()
                 play(video, library.videos)
             }
             Button("Cancel", role: .cancel) {}
@@ -170,10 +193,10 @@ private struct RoomShell: View {
             if let feature = library.videos.first, let owner = library.channels.first(where: { $0.id == feature.channelID }) {
                 Button("View channel") { channel = owner }
             }
-            Button("Refresh Home") { refresh = UUID() }
+            Button("Refresh Home") { library.requestRefresh() }
             Button("Cancel", role: .cancel) {}
         }
-        .task(id: refresh) { await library.refresh(account: account) }
+        .task(id: library.refreshID) { await library.refresh(account: account) }
         .onChange(of: RoomWatchHistoryStore.Scope(signedIn: account.isSignedIn, profileID: library.profile?.id), initial: true) { _, scope in
             history.select(scope)
             viewing.onVideoStarted = { [weak history, weak account, id = account.sessionID] video in
@@ -224,7 +247,7 @@ private struct RoomShell: View {
                     refreshDiscover()
                     closeMenu(to: .discoverCategory(discoverCategory))
                 } else {
-                    refresh = UUID()
+                    library.requestRefresh()
                     choose(.home)
                 }
             } label: { Label(section == .discover ? "Refresh Discover" : "Refresh Home", systemImage: "arrow.clockwise") }
@@ -275,7 +298,7 @@ private struct RoomShell: View {
     }
 
     private func refreshDiscover() {
-        if discoverCategory == .forYou { refresh = UUID() }
+        if discoverCategory == .forYou { library.requestRefresh() }
         else { categoryReload = UUID() }
     }
 

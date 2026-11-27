@@ -300,8 +300,30 @@ struct ChannelCatalog: Sendable {
         try Self.publicResults(from: await publicPage(path: "results", item: URLQueryItem(name: "search_query", value: query)))
     }
 
+    func videoDescription(for videoID: String, token: String?) async throws -> String? {
+        guard RoomAIValidation.validID(videoID) else { throw CatalogError.unreadable }
+        if let token {
+            do {
+                let page = try await list("videos", ["part": "snippet", "id": videoID, "fields": "items(id,snippet/description)"], token)
+                if let text = page.items.first(where: { $0.id?.raw == videoID })?.snippet?.description {
+                    return Self.creatorText(text)
+                }
+            } catch { try Task.checkCancellation() }
+        }
+        return try Self.publicDescription(from: await watchPage(videoID), videoID: videoID)
+    }
+
+    func similarVideos(to video: ChannelVideo) async throws -> [ChannelVideo] {
+        try await related(to: video.id)
+    }
+
     func related(to videoID: String) async throws -> [ChannelVideo] {
-        try Self.publicRelated(from: await publicPage(path: "watch", item: URLQueryItem(name: "v", value: videoID)))
+        guard RoomAIValidation.validID(videoID) else { throw CatalogError.unreadable }
+        return try Self.publicRelated(from: await watchPage(videoID), videoID: videoID)
+    }
+
+    private func watchPage(_ videoID: String) async throws -> Data {
+        try await publicPage(path: "watch", item: URLQueryItem(name: "v", value: videoID))
     }
 
     private func publicPage(path: String, item: URLQueryItem) async throws -> Data {
@@ -320,9 +342,10 @@ struct ChannelCatalog: Sendable {
         return contents
     }
 
-    static func publicRoot(from data: Data) throws -> [String: Any] {
+    static func publicRoot(from data: Data, variable: String = "ytInitialData") throws -> [String: Any] {
         let html = String(decoding: data, as: UTF8.self)
-        guard let start = html.range(of: #"var\s+ytInitialData\s*=\s*"#, options: .regularExpression)?.upperBound,
+        let assignment = #"var\s+"# + NSRegularExpression.escapedPattern(for: variable) + #"\s*=\s*"#
+        guard let start = html.range(of: assignment, options: .regularExpression)?.upperBound,
               let end = html.range(of: "</script>", options: .caseInsensitive, range: start..<html.endIndex)?.lowerBound
         else { throw CatalogError.unreadable }
         var json = html[start..<end].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -409,36 +432,6 @@ struct ChannelCatalog: Sendable {
         }.compactMap { $0["thumbnailBadgeViewModel"] as? Object }
     }
 
-    static func publicRelated(from data: Data) throws -> [ChannelVideo] {
-        let contents = try publicContents(from: data)
-        func object(_ base: Object, _ path: String...) -> Object? {
-            path.reduce(base as Object?) { $0?[$1] as? Object }
-        }
-        guard let listing = object(contents, "twoColumnWatchNextResults", "secondaryResults", "secondaryResults"),
-              let sections = listing["results"] as? [Object] else { throw CatalogError.unreadable }
-        let items = sections.flatMap { section -> [Object] in
-            (object(section, "itemSectionRenderer")?["contents"] as? [Object]) ?? [section]
-        }
-        return items.compactMap { item in
-            guard let video = item["lockupViewModel"] as? Object, video["contentType"] as? String == "LOCKUP_CONTENT_TYPE_VIDEO",
-                  let id = video["contentId"] as? String, let metadata = object(video, "metadata", "lockupMetadataViewModel"),
-                  let name = object(metadata, "title")?["content"] as? String,
-                  let owner = object(metadata, "image", "decoratedAvatarViewModel", "rendererContext", "commandContext",
-                                     "onTap", "innertubeCommand", "browseEndpoint")?["browseId"] as? String, ChannelAddress.isID(owner),
-                  let rows = object(metadata, "metadata", "contentMetadataViewModel")?["metadataRows"] as? [Object],
-                  let parts = rows.first?["metadataParts"] as? [Object], let part = parts.first,
-                  let creator = object(part, "text")?["content"] as? String else { return nil }
-            let thumbnail = object(video, "contentImage", "thumbnailViewModel")
-            let badges = publicThumbnailBadges(thumbnail)
-            guard !badges.contains(where: { ($0["badgeStyle"] as? String) == "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE" }) else { return nil }
-            let duration = badges.compactMap { RoomVideoFacts.seconds(from: $0["text"] as? String) }.first
-            let images = (thumbnail?["image"] as? Object)?["sources"] as? [Object]
-            let image = (images?.last?["url"] as? String).flatMap(URL.init(string:))
-            return ChannelVideo(id: id, title: name, channelID: owner, channelTitle: creator,
-                                thumbnail: image?.scheme == "https" ? image : nil, durationSeconds: duration)
-        }
-    }
-
     private static func decodeTitle(_ text: String) -> String {
         text.replacingOccurrences(of: "&quot;", with: "\"").replacingOccurrences(of: "&#39;", with: "'")
             .replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
@@ -512,7 +505,7 @@ private struct APIItem: Decodable {
     struct Snippet: Decodable {
         struct Thumbnail: Decodable { let url: URL? }
         struct Resource: Decodable { let channelId: String? }
-        let title, channelTitle, publishedAt, channelId, videoOwnerChannelId, liveBroadcastContent, customUrl: String?
+        let title, description, channelTitle, publishedAt, channelId, videoOwnerChannelId, liveBroadcastContent, customUrl: String?
         let tags: [String]?
         let resourceId: Resource?
         let thumbnails: [String: Thumbnail]?

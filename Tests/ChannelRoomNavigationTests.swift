@@ -1,3 +1,4 @@
+import CoreImage
 import XCTest
 import UIKit
 
@@ -143,13 +144,8 @@ final class ChannelRoomNavigationTests: XCTestCase {
         continueAfterFailure = false
         let app = try playSampleMovie()
         let remote = XCUIRemote.shared
-        remote.press(.up)
         let player = app.descendants(matching: .any)["native-playback"]
-        let save = player.cells["Add to playlist"]
-        if !save.exists {
-            let more = player.buttons.matching(NSPredicate(format: "label BEGINSWITH[c] 'More'")).firstMatch
-            if more.exists { selectWithRemote(more, in: app) }
-        }
+        let save = transportAction("Add to playlist", in: app)
         XCTAssertTrue(save.waitForExistence(timeout: 5))
         XCTAssertFalse(player.cells["Ask AI"].exists, "Ask AI should be absent from the player transport controls.")
         selectWithRemote(save, in: app)
@@ -178,6 +174,166 @@ final class ChannelRoomNavigationTests: XCTestCase {
         selectWithRemote(app.buttons["drawer-mini-expand"], in: app)
         XCTAssertTrue(player.waitForExistence(timeout: 6))
         XCTAssertFalse(expand.exists)
+    }
+
+    func testPlayerDescriptionShowsPublishedTextAndBackRestoresPlayback() throws {
+        continueAfterFailure = false
+        let app = try playSampleMovie()
+        selectTransportAction("Description", in: app)
+        let panel = app.descendants(matching: .any)["player-panel-description"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 6))
+        XCTAssertEqual(panel.staticTexts["player-panel-video-title"].label, "Big Buck Bunny")
+        let body = panel.descendants(matching: .any)["player-description-text"]
+        guard body.waitForExistence(timeout: 30) else {
+            attachHierarchy(app, named: "Missing published description")
+            XCTFail("Blender's public movie has a description. An empty or error state is a failure here.")
+            return
+        }
+        let content = [body.label, body.value as? String ?? ""].joined(separator: " ")
+        // Published phrases from separate paragraphs catch a truncated preview.
+        XCTAssertTrue(content.localizedCaseInsensitiveContains("UHD High Frame rate version"))
+        XCTAssertTrue(content.localizedCaseInsensitiveContains("Learn more about this UHD high frame-rate version"))
+        XCTAssertGreaterThan(body.frame.height, 450, "The full description needs a visible reading area on TV.")
+        XCTAssertGreaterThan(body.frame.width, 800)
+        XCTAssertTrue(focusWithRemote(body, in: app), "The reader must accept remote scrolling.")
+        capture("Published movie description")
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["native-playback"].waitForExistence(timeout: 6))
+        selectTransportAction("View creator", in: app)
+        XCTAssertTrue(app.staticTexts["player-creator-title"].waitForExistence(timeout: 6))
+        XCTAssertEqual(app.staticTexts["player-creator-title"].label, "Blender")
+    }
+
+    func testPlayerCreatorCanFollowUnfollowAndPlayAnUpload() throws {
+        continueAfterFailure = false
+        let app = try playSampleMovie(requiringEmptyGuestLibrary: true)
+        selectTransportAction("View creator", in: app)
+        let creator = app.descendants(matching: .any)["player-panel-creator"]
+        XCTAssertTrue(creator.waitForExistence(timeout: 6))
+        XCTAssertEqual(creator.staticTexts["player-creator-title"].label, "Blender")
+        let follow = creator.buttons["player-creator-follow"]
+        XCTAssertTrue(follow.waitForExistence(timeout: 8))
+        XCTAssertEqual(follow.label, "Follow on this TV")
+        selectWithRemote(creator.buttons["player-creator-subscribe"], in: app)
+        let subscription = app.descendants(matching: .any)["player-creator-subscribe-sheet"]
+        XCTAssertTrue(subscription.waitForExistence(timeout: 6))
+        let qrImage = try XCTUnwrap(CIImage(image: subscription.screenshot().image))
+        let detector = try XCTUnwrap(CIDetector(ofType: CIDetectorTypeQRCode, context: nil,
+                                                options: [CIDetectorAccuracy: CIDetectorAccuracyHigh]))
+        let codes = detector.features(in: qrImage).compactMap { ($0 as? CIQRCodeFeature)?.messageString }
+        XCTAssertEqual(codes, ["https://www.youtube.com/channel/UCSMOQeBJ2RAnuFungnQOxLg"])
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(subscription.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(follow.waitForExistence(timeout: 6))
+        XCTAssertEqual(follow.label, "Follow on this TV")
+        selectWithRemote(follow, in: app)
+        XCTAssertTrue(follow.wait(for: \.label, toEqual: "Unfollow on this TV", timeout: 6))
+        selectWithRemote(follow, in: app)
+        XCTAssertTrue(follow.wait(for: \.label, toEqual: "Follow on this TV", timeout: 6))
+        playPanelTile(in: creator, app: app)
+        selectTransportAction("View creator", in: app)
+        XCTAssertTrue(creator.waitForExistence(timeout: 6))
+        XCTAssertEqual(creator.staticTexts["player-creator-title"].label, "Blender")
+        XCTAssertEqual(creator.buttons["player-creator-follow"].label, "Follow on this TV")
+    }
+
+    func testPlayerMoreLikeThisPlaysSelectedTileWithoutFollowing() throws {
+        continueAfterFailure = false
+        let app = try playSampleMovie(requiringEmptyGuestLibrary: true)
+        selectTransportAction("More like this", in: app)
+        let similar = app.descendants(matching: .any)["player-panel-similar"]
+        XCTAssertTrue(similar.waitForExistence(timeout: 6))
+        XCTAssertEqual(similar.staticTexts["player-panel-video-title"].label, "Big Buck Bunny")
+        XCTAssertTrue(similar.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'video-'")).firstMatch
+            .waitForExistence(timeout: 45), "The public movie should have related results.")
+        XCTAssertFalse(similar.buttons["video-aqz-KE-bpKQ"].exists)
+        playPanelTile(in: similar, app: app)
+        selectTransportAction("View creator", in: app)
+        let follow = app.buttons["player-creator-follow"]
+        XCTAssertTrue(follow.waitForExistence(timeout: 8))
+        XCTAssertEqual(follow.label, "Follow on this TV", "Playing a recommendation must keep its creator unfollowed.")
+    }
+
+    func testNativePlayerOverlayReturnsToTheSameVideo() throws {
+        continueAfterFailure = false
+        let app = try playSampleMovie()
+        // AVKit presents the same custom overlay for its swipe gesture and its transport button.
+        selectTransportAction("Show more options.", in: app)
+        let panel = app.descendants(matching: .any)["player-panel-similar"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 6))
+        XCTAssertTrue(panel.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'video-'")).firstMatch.waitForExistence(timeout: 30))
+        selectWithRemote(panel.buttons["player-panel-back"], in: app)
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 6))
+        selectTransportAction("Description", in: app)
+        XCTAssertTrue(app.staticTexts["player-panel-video-title"].waitForExistence(timeout: 6))
+        XCTAssertEqual(app.staticTexts["player-panel-video-title"].label, "Big Buck Bunny")
+    }
+
+    private func playPanelTile(in panel: XCUIElement, app: XCUIApplication) {
+        let tiles = panel.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'video-'"))
+        let tile = tiles.matching(NSPredicate(format: "identifier != 'video-aqz-KE-bpKQ'")).firstMatch
+        guard tile.waitForExistence(timeout: 45) else {
+            attachHierarchy(app, named: "Missing player panel results")
+            XCTFail("The public video should have playable thumbnail results.")
+            return
+        }
+        XCTAssertFalse(panel.descendants(matching: .any)["player-panel-error"].exists)
+        XCTAssertTrue(focusWithRemote(tile, in: app))
+        var chosenLabel = tile.label
+        let artwork = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            Self.hasThumbnailArtwork(tile.screenshot().image)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [artwork], timeout: 12), .completed, "The video tile should display thumbnail artwork.")
+        capture("Player thumbnails for " + panel.identifier)
+        XCUIRemote.shared.press(.select)
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 6))
+        let player = app.descendants(matching: .any)["native-playback"]
+        let next = app.buttons["next-after-unavailable"]
+        // A live recommendation can be withdrawn between listing and playback.
+        for _ in 0..<3 {
+            let resolved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in player.exists || next.exists }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [resolved], timeout: 30), .completed)
+            if player.exists { break }
+            let unavailableTitle = app.staticTexts["playing-title"].label
+            XCTAssertFalse(unavailableTitle.isEmpty)
+            XCTAssertTrue(chosenLabel.contains(unavailableTitle))
+            chosenLabel = next.value as? String ?? ""
+            XCTAssertFalse(chosenLabel.isEmpty)
+            selectWithRemote(next, in: app)
+        }
+        XCTAssertTrue(player.waitForExistence(timeout: 30), "A selected video from the real results should start in AVKit.")
+        selectTransportAction("Description", in: app)
+        let title = app.staticTexts["player-panel-video-title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 6))
+        XCTAssertFalse(title.label.isEmpty)
+        XCTAssertNotEqual(title.label, "Big Buck Bunny")
+        XCTAssertTrue(chosenLabel.contains(title.label), "The player should show the title the viewer selected.")
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(title.waitForNonExistence(timeout: 5))
+    }
+
+    // Artwork is decorative in the accessibility tree. Sample the interior of the
+    // 16:9 thumbnail, above the title and away from the centered placeholder icon.
+    private nonisolated static func hasThumbnailArtwork(_ image: UIImage) -> Bool {
+        guard let cgImage = image.cgImage else { return false }
+        let width = CGFloat(cgImage.width)
+        let artworkHeight = width * 9 / 16
+        let region = CGRect(x: width * 0.12, y: artworkHeight * 0.12,
+                            width: width * 0.76, height: artworkHeight * 0.27)
+        guard let crop = cgImage.cropping(to: region) else { return false }
+        var pixels = [UInt8](repeating: 0, count: 16 * 8 * 4)
+        return pixels.withUnsafeMutableBytes { bytes in
+            guard let context = CGContext(data: bytes.baseAddress, width: 16, height: 8, bitsPerComponent: 8,
+                                          bytesPerRow: 16 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
+            context.draw(crop, in: CGRect(x: 0, y: 0, width: 16, height: 8))
+            var tones = Set<Int>()
+            for i in stride(from: 0, to: bytes.count, by: 4) {
+                tones.insert((Int(bytes[i] >> 4) << 8) | (Int(bytes[i + 1] >> 4) << 4) | Int(bytes[i + 2] >> 4))
+            }
+            return tones.count >= 4
+        }
     }
 
     func testPlaylistThumbnailTilesNavigateAndReorderWithRemote() throws {
@@ -516,7 +672,10 @@ final class ChannelRoomNavigationTests: XCTestCase {
         capture("ChannelRoom actual handoff")
     }
 
-    private func playSampleMovie() throws -> XCUIApplication {
+    private func playSampleMovie(requiringEmptyGuestLibrary: Bool = false) throws -> XCUIApplication {
+        #if !targetEnvironment(simulator)
+        try XCTSkipIf(requiringEmptyGuestLibrary, "Local follow checks use an isolated guest simulator.")
+        #endif
         let app = XCUIApplication()
         let id = UUID()
         let videoID = "aqz-KE-bpKQ"
@@ -530,6 +689,15 @@ final class ChannelRoomNavigationTests: XCTestCase {
         app.launch()
         let remote = XCUIRemote.shared
         remote.press(.menu)
+        if requiringEmptyGuestLibrary {
+            let profile = app.buttons["account"]
+            XCTAssertTrue(profile.waitForExistence(timeout: 6))
+            try XCTSkipUnless(profile.label.contains("Sign in"), "Use a signed-out simulator for local follow checks.")
+            selectWithRemote(app.buttons["nav-channels"], in: app)
+            try XCTSkipUnless(app.buttons["Find a channel"].waitForExistence(timeout: 10),
+                              "Use a guest simulator with an empty subscription library.")
+            remote.press(.menu)
+        }
         selectWithRemote(app.buttons["nav-playlists"], in: app)
         selectWithRemote(app.descendants(matching: .any)["playlist-" + id.uuidString], in: app)
         selectWithRemote(app.buttons["Play all"], in: app)
@@ -557,17 +725,28 @@ final class ChannelRoomNavigationTests: XCTestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label ==[c] %@", title)).firstMatch
     }
 
-    private func selectTransportAction(_ title: String, in app: XCUIApplication) {
-        let action = element(labeled: title, in: app)
-        let remote = XCUIRemote.shared
-        // tvOS puts the action cells in the accessibility tree even while the
-        // transport bar is hidden. Up enters the transport controls.
-        remote.press(.up)
-        if !action.exists {
-            // AVKit can collapse custom actions into More depending on space.
-            let more = app.buttons.matching(NSPredicate(format: "label BEGINSWITH[c] 'More'")).firstMatch
-            if more.exists { selectWithRemote(more, in: app) }
+    private func transportAction(_ title: String, in app: XCUIApplication) -> XCUIElement {
+        let player = app.descendants(matching: .any)["native-playback"]
+        let interactiveTypes = [XCUIElement.ElementType.cell, .button, .menuItem].map(\.rawValue)
+        let match = NSPredicate(format: "elementType IN %@ AND label ==[c] %@ AND enabled == true", interactiveTypes, title)
+        let direct = player.descendants(matching: .any).matching(match).firstMatch
+        // AVKit exposes button cells even while the transport bar is hidden.
+        XCUIRemote.shared.press(.up)
+        if direct.exists { return direct }
+        // tvOS can collapse actions into a separate system popover.
+        let overflow = player.descendants(matching: .any).matching(NSPredicate(
+            format: "elementType IN %@ AND label BEGINSWITH[c] 'More' AND label !=[c] 'More like this'",
+            interactiveTypes
+        )).firstMatch
+        if overflow.exists {
+            selectWithRemote(overflow, in: app)
+            return app.descendants(matching: .any).matching(match).firstMatch
         }
+        return direct
+    }
+
+    private func selectTransportAction(_ title: String, in app: XCUIApplication) {
+        let action = transportAction(title, in: app)
         guard action.waitForExistence(timeout: 3) else {
             attachHierarchy(app, named: "Missing transport action \(title)")
             XCTFail("AVKit did not reveal \(title).")

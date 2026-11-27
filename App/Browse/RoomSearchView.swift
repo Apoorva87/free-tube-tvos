@@ -109,10 +109,12 @@ struct RoomChannelView: View {
     let account: ChannelAccount
     let library: ChannelLibrary
     let channel: RoomChannel
+    var returnToPlayer: (() -> Void)? = nil
     let play: (ChannelVideo, [ChannelVideo]) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var detailed: RoomChannel?
     @State private var pendingVideo: ChannelVideo?
+    @State private var showingSubscription = false
     @State private var videos = [ChannelVideo]()
     @State private var next: String?
     @State private var isLoading = true
@@ -121,43 +123,99 @@ struct RoomChannelView: View {
 
     private var followed: Bool { library.followed.contains(channel.id) }
     private var imported: Bool { library.imported.contains { $0.id == channel.id } }
+    private var subscriptionURL: URL? {
+        guard ChannelAddress.isID(channel.id) else { return nil }
+        return URL(string: "https://www.youtube.com/channel/" + channel.id)
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 HStack {
-                    Button { dismiss() } label: { Label("Back", systemImage: "chevron.left") }
+                    Button(action: returnToPlayer ?? { dismiss() }) { Label("Back", systemImage: "chevron.left") }
+                        .accessibilityIdentifier("player-panel-back")
                     Spacer()
-                    if imported { Label("Subscribed on YouTube", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary) }
-                    else {
+                    if imported {
+                        Label("Subscribed on YouTube", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.secondary).accessibilityIdentifier("player-creator-subscribed")
+                    } else if ChannelAddress.isID(channel.id) {
+                        if returnToPlayer != nil {
+                            Button { showingSubscription = true } label: {
+                                Label("Subscribe on YouTube", systemImage: "qrcode")
+                            }
+                            .accessibilityIdentifier("player-creator-subscribe")
+                        }
                         Button {
                             library.toggle(detailed ?? channel, preview: videos)
+                            if returnToPlayer != nil { library.requestRefresh() }
                         } label: {
                             Label(followed ? "Unfollow on this TV" : "Follow on this TV", systemImage: followed ? "checkmark" : "plus")
                         }
+                        .accessibilityIdentifier("player-creator-follow")
                     }
                 }
-                RoomHeading(title: detailed?.title ?? channel.title, subtitle: followed ? "Recent uploads" : "Follow this channel to play its uploads.")
-                if isLoading { RoomLoading(text: "Loading uploads…") }
+                .buttonStyle(RoomToolbarStyle())
+                HStack(spacing: 20) {
+                    RoomAvatar(channel: detailed ?? channel, symbol: "person.fill", size: 74)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(detailed?.title ?? channel.title).font(.largeTitle.bold())
+                            .accessibilityAddTraits(.isHeader).accessibilityIdentifier("player-creator-title")
+                        if let handle = (detailed ?? channel).handle {
+                            Text(handle).font(.headline).foregroundStyle(RoomPalette.muted)
+                        }
+                    }
+                }
+                RoomShelfTitle(title: "Recent uploads")
+                if !followed && returnToPlayer == nil {
+                    Text("Follow this channel to play its uploads.").font(.headline).foregroundStyle(RoomPalette.muted)
+                }
+                if isLoading { RoomLoading(text: "Loading uploads…").accessibilityIdentifier("player-panel-loading") }
                 if let error {
-                    RoomNotice(message: error)
-                    Button("Try again") { revision = UUID() }
+                    RoomNotice(message: error).accessibilityIdentifier("player-panel-error")
+                    Button("Try again") { revision = UUID() }.accessibilityIdentifier("player-panel-retry")
                 }
                 if !isLoading && videos.isEmpty && error == nil {
                     Text("This channel has no recent public uploads.").foregroundStyle(.secondary)
+                        .accessibilityIdentifier("player-panel-empty")
                 }
                 RoomVideoGrid(videos: videos) { video in
-                    if followed { play(video, videos) }
+                    if followed || returnToPlayer != nil { play(video, videos) }
                     else { pendingVideo = video }
                 }
                 if next != nil && !isLoading && error == nil {
                     Button("More uploads") { revision = UUID() }
                 }
-            }.padding(16)
+            }.padding(returnToPlayer == nil ? 16 : 42)
         }
         .scrollClipDisabled()
         .toolbar(.hidden, for: .navigationBar)
         .background(RoomPalette.background.ignoresSafeArea())
+        .onExitCommand(perform: showingSubscription ? nil : returnToPlayer)
+        .sheet(isPresented: $showingSubscription, onDismiss: {
+            if account.isSignedIn { library.requestRefresh() }
+        }) {
+            if let url = subscriptionURL {
+                VStack(spacing: 24) {
+                    Text(detailed?.title ?? channel.title).font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
+                    RoomQRCode(url: url, size: 300)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("YouTube channel QR code")
+                        .accessibilityValue(url.absoluteString)
+                        .accessibilityIdentifier("player-creator-subscribe-qr")
+                    Text("Scan with your phone, then choose Subscribe on YouTube.")
+                        .font(.headline).multilineTextAlignment(.center)
+                    Button("Done") { showingSubscription = false }
+                        .accessibilityIdentifier("player-creator-subscribe-done")
+                }
+                .padding(42)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(RoomPalette.background.ignoresSafeArea())
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("player-creator-subscribe-sheet")
+                .onExitCommand { showingSubscription = false }
+            }
+        }
         .alert("Follow this channel to watch?", isPresented: Binding(
             get: { pendingVideo != nil },
             set: { if !$0 { pendingVideo = nil } }
@@ -178,11 +236,20 @@ struct RoomChannelView: View {
         error = nil
         defer { if !Task.isCancelled { isLoading = false } }
         do {
-            let token = account.isSignedIn ? try await account.accessToken() : nil
+            var token: String?
             var resolved = detailed ?? channel
-            if token != nil && resolved.uploadsID == nil {
-                resolved = try await library.api.find(address: .id(channel.id), token: token)
+            do {
+                token = account.isSignedIn ? try await account.accessToken() : nil
+                if token != nil && resolved.uploadsID == nil {
+                    resolved = try await library.api.find(address: .id(channel.id), token: token)
+                }
+            } catch {
+                try Task.checkCancellation()
+                // The first page of a creator's uploads is also available publicly.
+                guard returnToPlayer != nil, next == nil else { throw error }
+                token = nil
             }
+            try Task.checkCancellation()
             let page = try await library.api.uploads(resolved, token: token, page: next)
             try Task.checkCancellation()
             detailed = resolved

@@ -199,22 +199,85 @@ final class RoomDiscoveryTests: XCTestCase {
         XCTAssertThrowsError(try ChannelCatalog.publicUploads(from: PublicUploadsFixture.html(), channelID: "UC1111111111111111111111"))
     }
 
+    @MainActor func testPlayerDescriptionUsesCreatorTextAndKeepsParagraphsAcrossAccountModes() async throws {
+        let catalog = WatchMetadataFixture.catalog()
+        let signedIn = try await catalog.videoDescription(for: "current0001", token: "fixture")
+        XCTAssertEqual(signedIn, "API intro.\n\nAPI credits.")
+        let guest = try await catalog.videoDescription(for: "current0001", token: nil)
+        XCTAssertEqual(guest, "Artist's notes.\n\nCredits: A & B.")
+        let fallback = try await catalog.videoDescription(for: "current0002", token: "fixture")
+        XCTAssertEqual(fallback, "Artist's notes.\n\nCredits: A & B.")
+        let noDescription = try await catalog.videoDescription(for: "empty000001", token: nil)
+        XCTAssertNil(noDescription)
+        do {
+            _ = try await catalog.videoDescription(for: "wrong000001", token: nil)
+            XCTFail("A watch page for a different video must be rejected.")
+        } catch CatalogError.unreadable {}
+    }
+
+    func testPublicDescriptionFallsBackToTheIdentifiedVideosExpandedText() throws {
+        let html = """
+        <meta name="description" content="Truncated summary">
+        <script>var ytInitialData = {
+          "currentVideoEndpoint":{"watchEndpoint":{"videoId":"current0001"}},
+          "contents":{"twoColumnWatchNextResults":{
+            "secondaryResults":{"secondaryResults":{"results":[{"videoSecondaryInfoRenderer":{"description":{"simpleText":"Other video"}}}]}},
+            "results":{"results":{"contents":[{"videoSecondaryInfoRenderer":{"attributedDescription":{"content":"First paragraph.\\n\\nSecond paragraph."}}}]}}
+          }}
+        };</script>
+        """
+        let data = Data(html.utf8)
+        XCTAssertEqual(try ChannelCatalog.publicDescription(from: data, videoID: "current0001"), "First paragraph.\n\nSecond paragraph.")
+        XCTAssertThrowsError(try ChannelCatalog.publicDescription(from: data, videoID: "foreign0001"))
+        let missingBody = html.replacingOccurrences(of: "attributedDescription", with: "collapsedPreview")
+        XCTAssertThrowsError(try ChannelCatalog.publicDescription(from: Data(missingBody.utf8), videoID: "current0001"))
+    }
+
+    func testUnrecognizedRecommendationFeedOffersRetry() {
+        let html = """
+        <script>var ytInitialData = {
+          "currentVideoEndpoint":{"watchEndpoint":{"videoId":"current0001"}},
+          "contents":{"twoColumnWatchNextResults":{"secondaryResults":{"secondaryResults":{"results":[
+             {"itemSectionRenderer":{"contents":[{"unexpectedCardRenderer":{"title":"Changed layout"}}]}}
+          ]}}}}
+        };</script>
+        """
+        XCTAssertThrowsError(try ChannelCatalog.publicRelated(from: Data(html.utf8), videoID: "current0001"))
+    }
+
+    @MainActor func testPlayerSimilarVideosKeepWatchOrderAndExcludeSeedInvalidIDsAndDuplicates() async throws {
+        let catalog = WatchMetadataFixture.catalog()
+        let results = try await catalog.similarVideos(to: video("current0001", by: "artist"))
+        XCTAssertEqual(results.map(\.id), ["song0000001", "song0000002"])
+        XCTAssertEqual(results.map(\.channelTitle), ["Artist", "Band"])
+        XCTAssertEqual(results.map(\.durationSeconds), [nil, 185])
+        let empty = try await catalog.similarVideos(to: video("empty000001", by: "artist"))
+        XCTAssertTrue(empty.isEmpty)
+        for id in ["wrong000001", "error000001"] {
+            do {
+                _ = try await catalog.similarVideos(to: video(id, by: "artist"))
+                XCTFail("A mismatched page or a service failure must allow a retry.")
+            } catch { XCTAssertTrue(error is CatalogError) }
+        }
+    }
+
     func testWatchRelatedOnlyAcceptsVideosWithAnIdentifiableCreator() throws {
         let id = "UC1111111111111111111111"
         let avatar = ["rendererContext": ["commandContext": ["onTap": ["innertubeCommand": ["browseEndpoint": ["browseId": id]]]]]]
         let metadata: [String: Any] = ["title": ["content": "Gravity"], "image": ["decoratedAvatarViewModel": avatar],
             "metadata": ["contentMetadataViewModel": ["metadataRows": [["metadataParts": [["text": ["content": "Lab"]]]]]]]]
-        var video: [String: Any] = ["contentType": "LOCKUP_CONTENT_TYPE_VIDEO", "contentId": "related",
+        var video: [String: Any] = ["contentType": "LOCKUP_CONTENT_TYPE_VIDEO", "contentId": "related0001",
                                     "metadata": ["lockupMetadataViewModel": metadata]]
         let good = ["lockupViewModel": video]
         video["contentType"] = "LOCKUP_CONTENT_TYPE_PLAYLIST"
         let playlist = ["lockupViewModel": video]
         let items = [["itemSectionRenderer": ["contents": [good, playlist]]]]
-        let root = ["contents": ["twoColumnWatchNextResults": ["secondaryResults": ["secondaryResults": ["results": items]]]]]
+        let root: [String: Any] = ["currentVideoEndpoint": ["watchEndpoint": ["videoId": "current0001"]],
+                                   "contents": ["twoColumnWatchNextResults": ["secondaryResults": ["secondaryResults": ["results": items]]]]]
         let json = try JSONSerialization.data(withJSONObject: root)
         let html = "<script>var ytInitialData = " + String(decoding: json, as: UTF8.self) + ";</script>"
-        let result = try ChannelCatalog.publicRelated(from: Data(html.utf8))
-        XCTAssertEqual(result.map(\.id), ["related"])
+        let result = try ChannelCatalog.publicRelated(from: Data(html.utf8), videoID: "current0001")
+        XCTAssertEqual(result.map(\.id), ["related0001"])
         XCTAssertEqual(result.first?.channelID, id)
     }
 }
@@ -266,4 +329,67 @@ private final class PublicUploadsFixture: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
+
+
+private final class WatchMetadataFixture: URLProtocol, @unchecked Sendable {
+    private typealias Object = [String: Any]
+
+    static func catalog() -> ChannelCatalog {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [WatchMetadataFixture.self]
+        return ChannelCatalog(session: URLSession(configuration: config))
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let url = request.url!
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let authorization = request.value(forHTTPHeaderField: "Authorization")
+        var status = 503
+        var body = Data()
+        if url.host == "www.googleapis.com", url.path == "/youtube/v3/videos", authorization == "Bearer fixture",
+           query.contains(URLQueryItem(name: "id", value: "current0001")) {
+            body = Data(#"{"items":[{"id":"foreign0001","snippet":{"description":"Wrong creator"}},{"id":"current0001","snippet":{"description":"API intro.\n\nAPI credits."}}]}"#.utf8)
+            status = 200
+        } else if url.host == "www.youtube.com", url.path == "/watch", authorization == nil,
+                  let id = query.first(where: { $0.name == "v" })?.value, id != "error000001" {
+            body = Self.page(for: id)
+            status = 200
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!,
+                            cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func page(for requestedID: String) -> Data {
+        let id = requestedID == "wrong000001" ? "foreign0001" : requestedID
+        let channel = "UC1111111111111111111111"
+        let command = ["onTap": ["innertubeCommand": ["browseEndpoint": ["browseId": channel]]]]
+        let owner: Object = ["content": "Artist", "commandRuns": [command]]
+        let rows = [["metadataParts": [["text": owner]]]]
+        let metadata: Object = ["title": ["content": "Song"], "metadata": ["contentMetadataViewModel": ["metadataRows": rows]]]
+        func lockup(_ id: String) -> Object {
+            ["lockupViewModel": ["contentId": id, "contentType": "LOCKUP_CONTENT_TYPE_VIDEO", "metadata": ["lockupMetadataViewModel": metadata]]]
+        }
+        let byline = ["runs": [["text": "Band", "navigationEndpoint": ["browseEndpoint": ["browseId": channel]]]]]
+        let compact: Object = ["compactVideoRenderer": ["videoId": "song0000002", "title": ["simpleText": "Encore"],
+                               "lengthText": ["simpleText": "3:05"], "shortBylineText": byline]]
+        let entries = id == "empty000001" ? [] : [lockup(id), lockup("bad"), lockup("song0000001"), compact, lockup("song0000001")]
+        let listing = ["secondaryResults": ["results": [["itemSectionRenderer": ["contents": entries]]]]]
+        let root: Object = ["currentVideoEndpoint": ["watchEndpoint": ["videoId": id]],
+                            "contents": ["twoColumnWatchNextResults": ["secondaryResults": listing]]]
+        let description = id == "empty000001" ? "" : "Artist's notes.\n\nCredits: A & B."
+        let player = ["videoDetails": ["videoId": id, "shortDescription": description]]
+        func script(_ variable: String, _ object: Object) -> String {
+            let json = try! JSONSerialization.data(withJSONObject: object)
+            return "<script>var " + variable + " = " + String(decoding: json, as: UTF8.self) + ";</script>"
+        }
+        return Data(("<meta name='description' content='SEO summary'>" + script("ytInitialPlayerResponse", player) + script("ytInitialData", root)).utf8)
+    }
 }

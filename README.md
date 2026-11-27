@@ -44,6 +44,9 @@ The TV stores manually entered client settings and the Google refresh token in i
 | Move down the sidebar | From the profile icon, press **Down** for Discover, then Home, Subscriptions, Playlists, History, Search and Ask AI. |
 | Return to your channels | Press **Back** while browsing and select **Subscriptions**. Focus a channel to filter its uploads. Press **Right** to return to the videos. |
 | Adjust playback speed | Press **Up** during playback and choose the speedometer. Available rates are 0.5×, 1×, 1.25×, 1.5× and 2×. |
+| Visit the creator | Choose **View creator** in the player controls. Play another upload, follow the channel on this TV, or select **Subscribe on YouTube** and scan the code to subscribe on your phone. When you close the code, Free Tube refreshes the subscriptions for its signed-in profile. |
+| Read the description | Choose **Description** in the player controls. Use the remote to scroll the creator’s text. **Back** returns to the video. |
+| Find a similar song or video | Choose **More like this** in the player controls, or swipe up on the Siri Remote while the controls are hidden. Select a thumbnail to play it. Suggestions come from the current video’s YouTube recommendations. |
 | Search while watching | Choose **Watch while browsing** in the player, then open **Search**. The in-app mini-player uses one-third of the screen width. The tvOS keyboard covers the picture temporarily during text entry. |
 | Leave a video | Press **Back** to stop full-screen playback and return to browsing. If a transport menu is open, Back closes that menu first. |
 | Watch something again | Open **History** and select a thumbnail. Your latest watches come first. Each YouTube profile and signed-out viewing have their own history on this TV. |
