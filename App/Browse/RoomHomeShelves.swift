@@ -173,11 +173,11 @@ private struct RoomFeaturedVideo: View {
                     }
                     .font(.system(size: 24)).foregroundStyle(Color(white: 0.86))
                     HStack(spacing: 16) {
-                        Button("Watch", action: watch)
-                            .buttonStyle(FeatureButtonStyle()).focused(focus, equals: .featured)
+                        RoomPlayButton("Watch", action: watch)
+                            .focused(focus, equals: .featured)
                             .accessibilityIdentifier("featured-watch")
                         Button(action: options) { Image(systemName: "ellipsis").rotationEffect(.degrees(90)) }
-                            .buttonStyle(FeatureButtonStyle(circle: true)).accessibilityLabel("More options")
+                            .buttonStyle(FeatureOptionsStyle()).accessibilityLabel("More options")
                     }.padding(.top, 9)
                 }
                 .frame(maxWidth: bounds.size.width * 0.68, alignment: .leading)
@@ -189,12 +189,52 @@ private struct RoomFeaturedVideo: View {
     }
 }
 
-private struct FeatureButtonStyle: ButtonStyle {
-    var circle = false
+struct RoomPlayButton: View {
+    let title: LocalizedStringKey
+    let action: () -> Void
+
+    init(_ title: LocalizedStringKey, action: @escaping () -> Void) {
+        self.title = title
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(decorative: "PlayMark")
+                    .resizable().scaledToFit().frame(width: 50, height: 28)
+                Text(title)
+            }
+            .padding(.horizontal, 23).frame(minHeight: 68)
+        }
+        .buttonStyle(RoomPlayButtonStyle())
+        .accessibilityLabel(Text(title))
+    }
+}
+
+private struct RoomPlayButtonStyle: ButtonStyle {
+    @Environment(\.isFocused) private var focused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        let colors = focused ? [Color.white, Color(white: 0.90)] : [Color(white: 0.23), Color(white: 0.12)]
+        configuration.label
+            .font(.system(size: 26, weight: .semibold))
+            .foregroundStyle(focused ? .black : .white)
+            .background(LinearGradient(colors: colors, startPoint: .top, endPoint: .bottom), in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(.white.opacity(focused ? 0.95 : 0.23), lineWidth: focused ? 3 : 1)
+            }
+            .shadow(color: .black.opacity(0.35), radius: focused ? 6 : 3, y: configuration.isPressed ? 1 : 3)
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.98 : (focused ? 1.04 : 1)))
+    }
+}
+
+private struct FeatureOptionsStyle: ButtonStyle {
     @Environment(\.isFocused) private var focused
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 26, weight: .semibold))
-            .frame(minWidth: circle ? 68 : 134, minHeight: 68)
+            .frame(minWidth: 68, minHeight: 68)
             .foregroundStyle(focused ? .black : .white)
             .background(focused ? Color.white : Color(white: 0.18), in: Capsule())
             .opacity(configuration.isPressed ? 0.8 : 1)

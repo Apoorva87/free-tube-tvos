@@ -3,6 +3,97 @@ import UIKit
 
 @MainActor
 final class ChannelRoomNavigationTests: XCTestCase {
+    func testProfileDownReachesHomeAndHistory() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let remote = XCUIRemote.shared
+        remote.press(.menu)
+        let profile = app.buttons["account"]
+        XCTAssertTrue(profile.waitForExistence(timeout: 6))
+        XCTAssertTrue(focusWithRemote(profile, in: app))
+        for id in ["nav-home", "nav-channels", "nav-playlists", "nav-history"] {
+            remote.press(.down)
+            XCTAssertTrue(app.buttons[id].hasFocus, "Expected focus on \(id)")
+        }
+        remote.press(.select)
+        XCTAssertTrue(app.staticTexts["History"].waitForExistence(timeout: 6))
+        let tiles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'video-'"))
+        XCTAssertTrue(app.buttons["history-browse"].exists || tiles.count > 0)
+    }
+
+    func testCompactProfileMovesDownToHomeAndSubscriptions() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let remote = XCUIRemote.shared
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-playlists"], in: app)
+        let create = app.buttons["playlist-new"]
+        XCTAssertTrue(create.waitForExistence(timeout: 6))
+        XCTAssertTrue(focusWithRemote(create, in: app))
+        remote.press(.left)
+        let profile = app.buttons["show-menu"]
+        for _ in 0..<7 where !profile.hasFocus { remote.press(.up) }
+        XCTAssertTrue(profile.hasFocus)
+        remote.press(.down)
+        XCTAssertTrue(app.buttons["compact-home"].hasFocus)
+        remote.press(.down)
+        XCTAssertTrue(app.buttons["compact-channels"].hasFocus)
+    }
+
+    func testBackStopsPlaybackAndHistorySurvivesRelaunch() async throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let id = UUID()
+        let videoID = "aqz-KE-bpKQ"
+        let video: [String: Any] = ["id": videoID, "title": "Big Buck Bunny", "channelID": "UCSMOQeBJ2RAnuFungnQOxLg",
+                                    "channelTitle": "Blender", "publishedAt": Date()]
+        let archive: [String: Any] = ["version": 1, "playlists": [
+            ["id": id.uuidString, "title": "Playback test", "videos": [video]]
+        ]]
+        let data = try PropertyListSerialization.data(fromPropertyList: archive, format: .binary, options: 0)
+        app.launchArguments = ["-room.playlists.v1", "<" + data.map { String(format: "%02x", $0) }.joined() + ">"]
+        app.launch()
+        let remote = XCUIRemote.shared
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-playlists"], in: app)
+        selectWithRemote(app.descendants(matching: .any)["playlist-" + id.uuidString], in: app)
+        selectWithRemote(app.buttons["Play all"], in: app)
+        let player = app.descendants(matching: .any)["native-playback"]
+        XCTAssertTrue(player.waitForExistence(timeout: 30), "Requires a playable public stream for Big Buck Bunny.")
+        try await Task.sleep(for: .seconds(3))
+        remote.press(.menu)
+        if !player.waitForNonExistence(timeout: 2) { remote.press(.menu) }
+        if !player.waitForNonExistence(timeout: 4) {
+            attachHierarchy(app, named: "Full screen after Back")
+            XCTFail("Back should dismiss playback.")
+            return
+        }
+        XCTAssertFalse(app.buttons["mini-expand"].exists)
+        app.terminate()
+        app.launch()
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-history"], in: app)
+        let watched = app.buttons["video-" + videoID]
+        XCTAssertTrue(watched.waitForExistence(timeout: 6))
+        selectWithRemote(watched, in: app)
+        XCTAssertTrue(player.waitForExistence(timeout: 30))
+        selectTransportAction("Watch while browsing", in: app)
+        let expand = app.buttons["mini-expand"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 6))
+        try await Task.sleep(for: .seconds(4))
+        remote.press(.menu)
+        selectWithRemote(app.buttons["drawer-mini-expand"], in: app)
+        XCTAssertTrue(player.waitForExistence(timeout: 6))
+        XCTAssertFalse(expand.exists)
+        let elapsed = app.descendants(matching: .any)["AXElapsedTime"]
+        if !elapsed.exists { remote.press(.up) }
+        XCTAssertTrue(elapsed.waitForExistence(timeout: 4))
+        let seconds = elapsed.label.split(separator: ":").compactMap { Int($0) }.reduce(0) { $0 * 60 + $1 }
+        XCTAssertGreaterThanOrEqual(seconds, 4, "The video should keep playing while minimized.")
+    }
+
     func testPlaylistThumbnailTilesNavigateAndReorderWithRemote() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -219,11 +310,7 @@ final class ChannelRoomNavigationTests: XCTestCase {
         capture("Enlarged mini-player on Home")
         remote.press(.menu)
         XCTAssertTrue(app.buttons["nav-home"].waitForExistence(timeout: 5))
-        remote.press(.up)
-        XCTAssertTrue(app.buttons["nav-assistant"].hasFocus)
-        remote.press(.up)
-        XCTAssertTrue(app.buttons["nav-search"].hasFocus)
-        remote.press(.select)
+        selectWithRemote(app.buttons["nav-search"], in: app)
         let field = app.textFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertTrue(expand.exists)
@@ -250,17 +337,21 @@ final class ChannelRoomNavigationTests: XCTestCase {
         let restore = app.buttons["drawer-mini-expand"]
         XCTAssertTrue(restore.waitForExistence(timeout: 5))
         selectWithRemote(restore, in: app)
-        XCTAssertTrue(app.descendants(matching: .any)["native-playback"].waitForExistence(timeout: 5))
+        let player = app.descendants(matching: .any)["native-playback"]
+        XCTAssertTrue(player.waitForExistence(timeout: 5))
         XCTAssertFalse(expand.exists)
         // The first Back press can dismiss AVKit's transport controls.
-        for _ in 0..<2 where !expand.exists { remote.press(.menu) }
-        XCTAssertTrue(expand.waitForExistence(timeout: 5))
         remote.press(.menu)
-        let stop = app.buttons["drawer-mini-close"]
-        XCTAssertTrue(stop.waitForExistence(timeout: 5))
-        selectWithRemote(stop, in: app)
+        if !player.waitForNonExistence(timeout: 2) { remote.press(.menu) }
+        XCTAssertTrue(player.waitForNonExistence(timeout: 5), "Back should close the full-screen player.")
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "Back should return to Search.")
+        XCTAssertTrue(field.isEnabled)
+        XCTAssertFalse(expand.exists, "Back should stop playback without opening the mini-player.")
         XCTAssertFalse(close.exists)
-        XCTAssertFalse(app.descendants(matching: .any)["native-playback"].exists)
+        remote.press(.menu)
+        XCTAssertTrue(app.buttons["nav-search"].waitForExistence(timeout: 5))
+        XCTAssertFalse(restore.exists)
+        XCTAssertFalse(app.buttons["drawer-mini-close"].exists)
     }
 
     func testSubscriptionsFiltersAndVideoFocus() throws {

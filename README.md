@@ -27,9 +27,12 @@ The TV stores manually entered client settings and the Google refresh token in i
 | What you want to do | How |
 | --- | --- |
 | Explore new creators | Move down from the featured video to **Recommended** and **Creators to explore**. Move left or right within a row. |
+| Move down the sidebar | From the profile icon, press **Down** for Home. Keep pressing **Down** for Subscriptions, Playlists, History, Search and Ask AI. |
 | Return to your channels | Press **Back** while browsing and select **Subscriptions**. Focus a channel to filter its uploads. Press **Right** to return to the videos. |
 | Adjust playback speed | Press **Up** during playback and choose the speedometer. Available rates are 0.5×, 1×, 1.25×, 1.5× and 2×. |
 | Search while watching | Choose **Watch while browsing** in the player, then open **Search**. The in-app mini-player uses one-third of the screen width. The tvOS keyboard covers the picture temporarily during text entry. |
+| Leave a video | Press **Back** to stop full-screen playback and return to browsing. If a transport menu is open, Back closes that menu first. |
+| Watch something again | Open **History** for videos played in Free Tube on this TV. Select a thumbnail to replay it. History starts with this update, keeps your latest watches first, and is separate for each YouTube profile and for signed-out viewing. |
 | Go back to full screen | Choose **Expand video** in the mini-player or sidebar. Playback keeps its current position and rate. **Close video** stops it. |
 
 ## Custom playlists

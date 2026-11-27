@@ -60,7 +60,7 @@ private struct RoomPlaylistDetail: View {
                     RoomHeading(title: playlist.title, subtitle: playlist.summary)
                     HStack(spacing: 22) {
                         if let first = playlist.videos.first {
-                            Button { play(first, playlist.videos) } label: { Label("Play all", systemImage: "play.fill") }
+                            RoomPlayButton("Play all") { play(first, playlist.videos) }
                         }
                         Button("Edit playlist") { editor = playlist }
                         Button("Delete playlist", role: .destructive) { confirmingDelete = true }

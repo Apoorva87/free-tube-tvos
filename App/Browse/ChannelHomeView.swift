@@ -1,8 +1,10 @@
 import SwiftUI
 
 enum RoomSection: String, CaseIterable {
-    case home = "Home", channels = "Channels", search = "Search", playlists = "Playlists", assistant = "Ask AI"
-    static let sidebarOrder: [Self] = [.search, .assistant, .home, .channels, .playlists]
+    case home = "Home", channels = "Channels", search = "Search", playlists = "Playlists", history = "History", assistant = "Ask AI"
+    static let sidebarOrder: [Self] = [.home, .channels, .playlists, .history, .search, .assistant]
+    var title: String { self == .channels ? "Subscriptions" : rawValue }
+    var navigationID: String { self == .assistant ? "assistant" : rawValue.lowercased() }
     var icon: String {
         switch self {
         case .home: "house.fill"
@@ -10,12 +12,13 @@ enum RoomSection: String, CaseIterable {
         case .search: "magnifyingglass"
         case .assistant: "sparkles"
         case .playlists: "list.and.film"
+        case .history: "clock.arrow.circlepath"
         }
     }
 }
 
 enum RoomBrowseFocus: Hashable {
-    case menu, featured, newPlaylist, assistantPrompt, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
+    case menu, featured, newPlaylist, assistantPrompt, historyBrowse, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
 }
 
 private struct RoomFocusKey: EnvironmentKey {
@@ -50,6 +53,7 @@ private struct RoomShell: View {
     let account: ChannelAccount
     let onPlay: (ChannelVideo, [ChannelVideo]) -> Void
     @State private var library = ChannelLibrary()
+    @State private var history = RoomWatchHistoryStore()
     @State private var section = RoomSection.home
     @Binding var accountOpen: Bool
     @Binding var startsProfileSwitch: Bool
@@ -73,7 +77,7 @@ private struct RoomShell: View {
                                 .buttonStyle(RoomToolbarStyle()).focused($focus, equals: .menu)
                                 .accessibilityLabel("Open navigation")
                             }
-                            Text(section == .channels ? "Subscriptions" : section.rawValue)
+                            Text(section.title)
                                 .font(.system(size: 48, weight: .bold))
                         }
                     }
@@ -87,6 +91,8 @@ private struct RoomShell: View {
                             RoomAskView(inSidebar: true)
                         case .playlists:
                             RoomPlaylistsView(focus: $focus, play: onPlay)
+                        case .history:
+                            RoomWatchHistoryView(store: history, focus: $focus, play: onPlay, browse: { choose(.home) })
                         case .search:
                             RoomSearchView(account: account, library: library, open: { channel = $0 }, play: play)
                         }
@@ -96,7 +102,7 @@ private struct RoomShell: View {
                 .disabled(menuOpen).accessibilityHidden(menuOpen)
                 .onExitCommand { menuOpen = true }
                 RoomBrowseRail(profile: library.profile, section: section, visible: section != .search && !menuOpen,
-                               focus: $focus, lastTile: $lastTile, open: { menuOpen = true })
+                               focus: $focus, lastTile: $lastTile, open: { menuOpen = true }, choose: choose)
                 if menuOpen {
                     Color.black.opacity(0.62).ignoresSafeArea().accessibilityHidden(true)
                     drawer
@@ -111,6 +117,7 @@ private struct RoomShell: View {
                     case .home: .featured
                     case .channels: .subscriptionFilter(nil)
                     case .playlists: .newPlaylist
+                    case .history: history.firstFocus
                     case .assistant: .assistantPrompt
                     case .search: .menu
                     }
@@ -155,6 +162,13 @@ private struct RoomShell: View {
             Button("Cancel", role: .cancel) {}
         }
         .task(id: refresh) { await library.refresh(account: account) }
+        .onChange(of: RoomWatchHistoryStore.Scope(signedIn: account.isSignedIn, profileID: library.profile?.id), initial: true) { _, scope in
+            history.select(scope)
+            viewing.onVideoStarted = { [weak history, weak account, id = account.sessionID] video in
+                guard account?.sessionID == id else { return }
+                history?.record(video)
+            }
+        }
     }
 
     private var drawer: some View {
@@ -172,10 +186,10 @@ private struct RoomShell: View {
             .accessibilityIdentifier("account").padding(.bottom, 18)
             ForEach(RoomSection.sidebarOrder, id: \.self) { item in
                 Button { choose(item) } label: {
-                    Label(item == .channels ? "Subscriptions" : item.rawValue, systemImage: item.icon)
+                    Label(item.title, systemImage: item.icon)
                 }
                 .buttonStyle(RailButtonStyle(selected: section == item)).focused($focus, equals: .navigation(item))
-                .accessibilityIdentifier(item == .assistant ? "nav-assistant" : "nav-" + item.rawValue.lowercased())
+                .accessibilityIdentifier("nav-" + item.navigationID)
             }
             if viewing.presentation == .mini {
                 Button {
@@ -218,6 +232,7 @@ private struct RoomShell: View {
         case .home: library.videos.isEmpty ? nil : .featured
         case .channels: .subscriptionFilter(nil)
         case .playlists: .newPlaylist
+        case .history: history.firstFocus
         case .assistant: .assistantPrompt
         case .search: nil
         }
@@ -292,6 +307,7 @@ private struct RoomBrowseRail: View {
     let focus: FocusState<RoomBrowseFocus?>.Binding
     @Binding var lastTile: RoomBrowseFocus?
     let open: () -> Void
+    let choose: (RoomSection) -> Void
 
     var body: some View {
         ZStack {
@@ -299,7 +315,7 @@ private struct RoomBrowseRail: View {
         }
         .onChange(of: focus.wrappedValue) { _, target in
             switch target {
-            case .featured, .newPlaylist, .video, .channel, .subscriptionFilter: lastTile = target
+            case .featured, .newPlaylist, .historyBrowse, .video, .channel, .subscriptionFilter: lastTile = target
             default: break
             }
         }
@@ -312,19 +328,25 @@ private struct RoomBrowseRail: View {
     }
 
     private var compactRail: some View {
-        Button(action: open) {
-            VStack(spacing: 39) {
+        VStack(spacing: 8) {
+            Button(action: open) {
                 RoomAvatar(channel: profile, symbol: "person.fill", size: 50)
-                    .padding(.bottom, 22)
-                ForEach(RoomSection.sidebarOrder, id: \.self) { item in
+            }
+            .focused(focus, equals: .menu)
+            .accessibilityLabel("Open navigation").accessibilityIdentifier("show-menu")
+            .padding(.bottom, 14)
+            ForEach(RoomSection.sidebarOrder, id: \.self) { item in
+                Button { choose(item) } label: {
                     Image(systemName: item.icon).font(.system(size: 29, weight: .semibold))
                         .foregroundStyle(item == section ? .white : RoomPalette.muted)
                 }
-                Spacer()
-            }.padding(.top, 10).frame(width: 58)
+                .focused(focus, equals: .navigation(item))
+                .accessibilityLabel(item.title).accessibilityIdentifier("compact-" + item.navigationID)
+            }
+            Spacer()
         }
-        .buttonStyle(CompactRailStyle()).focused(focus, equals: .menu)
-        .accessibilityLabel("Open navigation").accessibilityIdentifier("show-menu")
+        .buttonStyle(CompactRailStyle())
+        .focusSection()
         .offset(x: -30).onExitCommand(perform: open)
     }
 }
@@ -332,10 +354,10 @@ private struct RoomBrowseRail: View {
 private struct CompactRailStyle: ButtonStyle {
     @Environment(\.isFocused) private var focused
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(alignment: .top) {
+        configuration.label.frame(width: 58, height: 62)
+            .background {
                 if focused {
-                    RoundedRectangle(cornerRadius: 30).strokeBorder(Color.white, lineWidth: 3).frame(height: 74)
+                    RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white, lineWidth: 3)
                 }
             }
     }

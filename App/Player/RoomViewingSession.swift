@@ -8,6 +8,7 @@ final class RoomViewingSession {
     private(set) var presentation = Presentation.closed
     private(set) var speed: Float = 1
     let playback = ChannelPlayback()
+    @ObservationIgnored var onVideoStarted: ((ChannelVideo) -> Void)?
     private var queue: [ChannelVideo] = []
     private var index = 0
     @ObservationIgnored private var loading: Task<Void, Never>?
@@ -57,9 +58,9 @@ final class RoomViewingSession {
         guard let video else { return }
         loading?.cancel()
         playback.stop()
-        loading = Task { @MainActor in
+        loading = Task { @MainActor [onVideoStarted] in
             guard !Task.isCancelled else { return }
-            await playback.play(video)
+            await playback.play(video) { onVideoStarted?(video) }
             guard !Task.isCancelled, playback.phase == .finished else { return }
             if next != nil { advance() }
             else if presentation == .mini { close() }

@@ -21,7 +21,7 @@ struct ChannelPlayerView: View {
     @State private var handoffFailed = false
     @FocusState private var youtubeButtonFocused: Bool
 
-    private var mini: Bool { session.presentation == .mini }
+    let mini: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -81,6 +81,7 @@ struct ChannelPlayerView: View {
         .clipShape(RoundedRectangle(cornerRadius: mini ? 14 : 0))
         .overlay { if mini { RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.35), lineWidth: 1) } }
         .ignoresSafeArea(edges: mini ? [] : .all)
+        .onExitCommand(perform: mini || sheet != nil ? nil : { session.close() })
         .sheet(item: $sheet) { choice in
             switch choice {
             case .ask(let video): RoomAskView(video: video)
@@ -91,9 +92,6 @@ struct ChannelPlayerView: View {
             handoffFailed = false
             if case .failed = phase { youtubeButtonFocused = !mini }
         }
-        .onExitCommand(perform: mini ? nil : {
-            if session.playback.phase == .playing { session.minimize() } else { session.close() }
-        })
     }
 
     private func openInYouTube(_ video: ChannelVideo) async {
@@ -124,16 +122,28 @@ private struct NativePlayer: UIViewControllerRepresentable {
     let ask: () -> Void
     let save: () -> Void
 
-    final class Coordinator {
+    final class Coordinator: NSObject, AVPlayerViewControllerDelegate {
+        let session: RoomViewingSession
         var videoID: String?
         var next: ChannelVideo?
         var configuredSpeed: Float?
+
+        init(session: RoomViewingSession) { self.session = session }
+
+        func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {
+            // AVKit has finished handling its own menus. SwiftUI owns the embedded player's presentation.
+            Task { @MainActor [session] in
+                if session.presentation == .full { session.close() }
+            }
+            return false
+        }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(session: session) }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
+        controller.delegate = context.coordinator
         controller.player = session.playback.player
         // The browsing window hosts this same controller and routes remote presses to the catalog.
         controller.allowsPictureInPicturePlayback = false
@@ -178,12 +188,13 @@ final class ChannelPlayback {
     private let resolver = PublicVideoPlayer()
     private var activeID = UUID()
     private var statusObservation: NSKeyValueObservation?
+    private var progressObserver: Any?
     private var notificationObservers: [NSObjectProtocol] = []
     private var eventsContinuation: AsyncStream<Event>.Continuation?
 
-    private enum Event: Sendable { case status(AVPlayerItem.Status), ended, failed }
+    private enum Event: Sendable { case status(AVPlayerItem.Status), started, ended, failed }
 
-    func play(_ video: ChannelVideo) async {
+    func play(_ video: ChannelVideo, onStart: () -> Void = {}) async {
         stop()
         let id = activeID
         let startupDeadline = Task { @MainActor in
@@ -209,11 +220,13 @@ final class ChannelPlayback {
             for await event in events {
                 guard !Task.isCancelled, id == activeID else { return }
                 switch event {
+                case .started: recordPlaybackStart(onStart)
                 case .status(.readyToPlay): phase = .playing
                 case .status(.failed), .failed:
                     phase = .failed("Free Tube couldn’t play the stream YouTube supplied for this video.")
                     return
                 case .ended:
+                    recordPlaybackStart(onStart)
                     phase = .finished
                     return
                 default: continue
@@ -240,6 +253,9 @@ final class ChannelPlayback {
         statusObservation = item.observe(\.status, options: [.initial, .new]) { item, _ in
             continuation.yield(.status(item.status))
         }
+        progressObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 4), queue: .main) { time in
+            if time.isNumeric && time > .zero { continuation.yield(.started) }
+        }
         let center = NotificationCenter.default
         notificationObservers = [
             center.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: nil) { _ in
@@ -252,11 +268,20 @@ final class ChannelPlayback {
         return events
     }
 
+    private func recordPlaybackStart(_ onStart: () -> Void) {
+        guard let progressObserver else { return }
+        player.removeTimeObserver(progressObserver)
+        self.progressObserver = nil
+        onStart()
+    }
+
     private func clearObservers() {
         eventsContinuation?.finish()
         eventsContinuation = nil
         statusObservation?.invalidate()
         statusObservation = nil
+        if let progressObserver { player.removeTimeObserver(progressObserver) }
+        progressObserver = nil
         notificationObservers.forEach(NotificationCenter.default.removeObserver)
         notificationObservers.removeAll()
     }

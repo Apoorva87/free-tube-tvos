@@ -78,7 +78,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,[t
 }
 
 .brand img {
-  border-radius:8px;
+  object-fit:contain;
 }
 
 .mast nav,.mast nav a,footer div {
@@ -260,7 +260,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,[t
   padding:2.1% 3.2%;
 }
 
-.feature img {
+.feature > img {
   position:absolute;
   inset:0 0 0 auto;
   width:74%;
@@ -307,10 +307,18 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,[t
 }
 
 .tv-button {
-  background:white;
+  display:inline-flex;
+  align-items:center;
+  gap:.55em;
+  background:linear-gradient(white,#e7e7e7);
   color:#161516;
   font-size:clamp(10px,1.3cqw,15px);
   font-weight:680;
+}
+
+.tv-button img {
+  width:1.9em;
+  height:auto;
 }
 
 .shelf {

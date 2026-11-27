@@ -41,6 +41,8 @@ extension ChannelPlaybackTests {
         let video = ChannelVideo(id: "aqz-KE-bpKQ", title: "Big Buck Bunny",
                                  channelID: "UCSMOQeBJ2RAnuFungnQOxLg", channelTitle: "Blender", thumbnail: nil)
         session.playback.player.isMuted = true
+        var startedIDs: [String] = []
+        session.onVideoStarted = { startedIDs.append($0.id) }
         session.open(video, in: [video])
         defer { session.close() }
         let deadline = ContinuousClock.now + .seconds(30)
@@ -71,5 +73,6 @@ extension ChannelPlaybackTests {
         XCTAssertEqual(player.rate, 0)
         session.close()
         XCTAssertNil(player.currentItem)
+        XCTAssertEqual(startedIDs, [video.id])
     }
 }
