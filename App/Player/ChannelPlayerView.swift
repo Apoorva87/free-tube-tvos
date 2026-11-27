@@ -186,6 +186,8 @@ private struct NativePlayer: UIViewControllerRepresentable {
                 coordinator?.similarOverlay?.dismiss(animated: true)
             })
             let overlay = UIHostingController(rootView: panel.environment(account).environment(library).preferredColorScheme(.dark))
+            overlay.preferredContentSize = CGSize(width: 1920, height: 960)
+            overlay.view.backgroundColor = .clear
             overlay.title = "More like this"
             coordinator.similarOverlay = overlay
             controller.customOverlayViewController = overlay
@@ -204,10 +206,9 @@ private struct NativePlayer: UIViewControllerRepresentable {
             session.minimize()
         }
         let add = UIAction(title: "Add to playlist", image: UIImage(systemName: "text.badge.plus")) { _ in save() }
-        let similar = UIAction(title: "More like this", image: UIImage(systemName: "music.note.list")) { _ in openPanel(.similar) }
         let creator = UIAction(title: "View creator", image: UIImage(systemName: "person.crop.circle")) { _ in openPanel(.creator) }
         let description = UIAction(title: "Description", image: UIImage(systemName: "text.alignleft")) { _ in openPanel(.description) }
-        var controls: [UIMenuElement] = [similar, creator, description, speed, minimize, add]
+        var controls: [UIMenuElement] = [creator, description, speed, minimize, add]
         controller.infoViewActions = [creator, description]
         if let next = session.next {
             controls.append(UIAction(title: "Next: \(next.title)", image: UIImage(systemName: "forward.end.fill")) { _ in

@@ -15,7 +15,23 @@ struct RoomPlayerPanelView: View {
     @Environment(ChannelLibrary.self) private var library
     @Environment(\.dismiss) private var dismiss
 
+    @State private var expanded = false
+
     var body: some View {
+        if panel == .similar && onClose != nil {
+            GeometryReader { bounds in
+                content
+                    .frame(width: bounds.size.width * (expanded ? 0.84 : 1.0 / 3.0))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            }
+            .frame(idealWidth: 1920, idealHeight: 960)
+            .onDisappear { expanded = false }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         Group {
             if panel == .creator {
                 let owner = library.channels.first { $0.id == video.channelID }
@@ -23,7 +39,7 @@ struct RoomPlayerPanelView: View {
                 RoomChannelView(account: account, library: library, channel: owner,
                                 returnToPlayer: close, play: play)
             } else {
-                RoomVideoDetails(panel: panel, video: video, close: close, play: play)
+                RoomVideoDetails(panel: panel, video: video, close: close, play: play, compact: onClose != nil && !expanded, resize: onClose == nil ? nil : { expanded.toggle() })
                     .onExitCommand(perform: close)
             }
         }
@@ -51,6 +67,8 @@ private struct RoomVideoDetails: View {
     let play: (ChannelVideo, [ChannelVideo]) -> Void
     @Environment(ChannelAccount.self) private var account
     @Environment(ChannelLibrary.self) private var library
+    let compact: Bool
+    let resize: (() -> Void)?
     @State private var retry = 0
     @State private var content = Content.loading
 
@@ -64,12 +82,18 @@ private struct RoomVideoDetails: View {
                 Button(action: close) { Label("Back", systemImage: "chevron.left") }
                     .buttonStyle(RoomToolbarStyle()).accessibilityIdentifier("player-panel-back")
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(panel == .description ? "Description" : "Similar videos").font(.largeTitle.bold())
+                    Text(panel == .description ? "Description" : "Similar videos").font(compact ? .title2.bold() : .largeTitle.bold())
                         .accessibilityAddTraits(.isHeader)
                     Text(video.title).font(.headline).foregroundStyle(RoomPalette.muted).lineLimit(2)
                         .accessibilityIdentifier("player-panel-video-title")
                 }
-                Spacer()
+                Spacer(minLength: 0)
+                if let resize {
+                    Button(action: resize) { Image(systemName: compact ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left") }
+                        .buttonStyle(RoomToolbarStyle())
+                        .accessibilityLabel(compact ? "Expand" : "Collapse")
+                        .accessibilityIdentifier("similar-resize")
+                }
             }
             switch content {
             case .loading:
@@ -80,7 +104,7 @@ private struct RoomVideoDetails: View {
                     .frame(maxWidth: 1200, maxHeight: .infinity)
             case .videos(let videos):
                 ScrollView(.vertical) {
-                    RoomTileGrid {
+                    LazyVGrid(columns: compact ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 292), spacing: 22)], spacing: 24) {
                         ForEach(videos) { related in
                             Button { play(related, videos) } label: { RoomVideoTileLabel(video: related) }
                                 .buttonStyle(VideoButtonStyle())
@@ -89,7 +113,7 @@ private struct RoomVideoDetails: View {
                     }
                     .padding(8)
                 }
-                .scrollClipDisabled()
+
             case .empty:
                 Text(panel == .description ? "This video has no description." : "No similar videos are available for this video.")
                     .font(.body).foregroundStyle(RoomPalette.muted).accessibilityIdentifier("player-panel-empty")
@@ -98,7 +122,7 @@ private struct RoomVideoDetails: View {
                 Button("Try again") { retry += 1 }.accessibilityIdentifier("player-panel-retry")
             }
         }
-        .padding(42)
+        .padding(compact ? 28 : 42)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: retry) { await load() }
     }

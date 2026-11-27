@@ -241,7 +241,7 @@ final class ChannelRoomNavigationTests: XCTestCase {
     func testPlayerMoreLikeThisPlaysSelectedTileWithoutFollowing() throws {
         continueAfterFailure = false
         let app = try playSampleMovie(requiringEmptyGuestLibrary: true)
-        selectTransportAction("More like this", in: app)
+        selectTransportAction("Show more options.", in: app)
         let similar = app.descendants(matching: .any)["player-panel-similar"]
         XCTAssertTrue(similar.waitForExistence(timeout: 6))
         XCTAssertEqual(similar.staticTexts["player-panel-video-title"].label, "Big Buck Bunny")
@@ -263,6 +263,20 @@ final class ChannelRoomNavigationTests: XCTestCase {
         let panel = app.descendants(matching: .any)["player-panel-similar"]
         XCTAssertTrue(panel.waitForExistence(timeout: 6))
         XCTAssertTrue(panel.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'video-'")).firstMatch.waitForExistence(timeout: 30))
+        let tiles = panel.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'video-'"))
+        let first = tiles.element(boundBy: 0)
+        XCTAssertTrue(focusWithRemote(first, in: app))
+        XCTAssertTrue(panel.frame.contains(first.frame))
+        capture("Compact similar videos")
+        XCUIRemote.shared.press(.down)
+        XCTAssertTrue(tiles.element(boundBy: 1).hasFocus)
+        let width = app.frame.width
+        XCTAssertLessThan(panel.frame.width, width * 0.45)
+        let resize = panel.buttons["similar-resize"]
+        selectWithRemote(resize, in: app)
+        XCTAssertGreaterThan(panel.frame.width, width * 0.65)
+        selectWithRemote(resize, in: app)
+        XCTAssertLessThan(panel.frame.width, width * 0.45)
         selectWithRemote(panel.buttons["player-panel-back"], in: app)
         XCTAssertTrue(panel.waitForNonExistence(timeout: 6))
         selectTransportAction("Description", in: app)
