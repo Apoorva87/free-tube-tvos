@@ -12,7 +12,9 @@ Open **Settings → Discover rows** in the sidebar to show or hide any row, move
 
 The native tvOS player supports speeds from 0.5× to 2×. Search, viewing history, and playlists work directly on the TV. **Ask AI** adds video research and playlist drafting through an optional paired computer.
 
-While the mini-player is open, hold Select on a video tile to add it directly to **Quick Playlist**. Queued picks play next in the order you add them. The playlist is also saved under **Playlists** for later.
+Hold Select on a video tile and choose **Add to Quick Playlist**. The same menu includes **Visit Creator** when the channel is available. Queued picks play next in the order you add them. Standalone videos then autoplay from each video’s related recommendations. Starting a saved playlist follows its saved order. freeTube prepares the next stream in the background. When it is queued in the player, the outgoing picture and audio fade over the last 0.35 seconds before the handoff. The playlist is also saved under **Playlists** for later.
+
+Search remembers the last six searches for each profile on this TV. Select a recent term to search again, use **Clear search** to reset the field and results, or choose **Clear history** to erase recent terms.
 
 ## Run in Xcode
 

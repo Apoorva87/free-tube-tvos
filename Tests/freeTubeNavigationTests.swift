@@ -132,18 +132,60 @@ final class freeTubeNavigationTests: XCTestCase {
         XCTAssertFalse(app.alerts.firstMatch.exists)
     }
 
-    func testMiniPlayerHoldQueuesVideoTile() throws {
+    func testMiniPlayerSearchHoldQueuesAndVisitsCreator() throws {
         continueAfterFailure = false
         let app = try playSampleMovie(includingQueuePick: true)
         selectTransportAction("Watch while browsing", in: app)
         let remote = XCUIRemote.shared
         XCTAssertTrue(app.buttons["mini-expand"].waitForExistence(timeout: 5))
-        let tile = app.buttons["video-eRsGyueVLvQ"]
-        XCTAssertTrue(tile.waitForExistence(timeout: 40))
+        remote.press(.menu) // Leave the sample playlist detail.
+        XCTAssertTrue(app.buttons["playlist-new"].waitForExistence(timeout: 5))
+        remote.press(.menu) // Open the navigation drawer.
+        selectWithRemote(app.buttons["nav-search"], in: app)
+        selectWithRemote(app.textFields.firstMatch, in: app)
+        app.typeText("Sintel Blender\n")
+        let tile = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'video-'")).firstMatch
+        XCTAssertTrue(tile.waitForExistence(timeout: 45))
+        remote.press(.menu)
         XCTAssertTrue(focusWithRemote(tile, in: app))
         remote.press(.select, forDuration: 1.2)
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Queued ·'")).firstMatch.waitForExistence(timeout: 2))
+        let quick = app.cells.containing(NSPredicate(format: "label == %@", "Add to Quick Playlist")).firstMatch
+        XCTAssertTrue(quick.waitForExistence(timeout: 5))
+        XCTAssertTrue(element(labeled: "Add to playlist", in: app).exists)
+        XCTAssertTrue(element(labeled: "Visit Creator", in: app).exists)
+        selectWithRemote(quick, in: app)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Queued ·'")).firstMatch.waitForExistence(timeout: 3))
+        XCTAssertTrue(focusWithRemote(tile, in: app))
+        remote.press(.select, forDuration: 1.2)
+        let creator = app.cells.containing(NSPredicate(format: "label == %@", "Visit Creator")).firstMatch
+        XCTAssertTrue(creator.waitForExistence(timeout: 5))
+        for _ in 0..<3 where !creator.hasFocus { remote.press(.down) }
+        XCTAssertTrue(creator.hasFocus)
+        remote.press(.select)
+        XCTAssertTrue(app.staticTexts["player-creator-title"].waitForExistence(timeout: 6))
         XCTAssertTrue(app.buttons["mini-expand"].exists)
+    }
+
+    func testRecentSearchCanBeReusedAndCleared() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let remote = XCUIRemote.shared
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-search"], in: app)
+        selectWithRemote(app.textFields.firstMatch, in: app)
+        app.typeText("Solar eclipse\n")
+        let recent = app.buttons["Solar eclipse"]
+        XCTAssertTrue(recent.waitForExistence(timeout: 8))
+        remote.press(.menu)
+        selectWithRemote(app.buttons["Clear search"], in: app)
+        XCTAssertFalse(app.buttons["Clear search"].exists)
+        XCTAssertTrue(recent.exists)
+        selectWithRemote(recent, in: app)
+        XCTAssertTrue(app.buttons["Clear search"].waitForExistence(timeout: 3))
+        selectWithRemote(app.buttons["Clear history"], in: app)
+        XCTAssertFalse(recent.exists)
+        XCTAssertFalse(app.buttons["Clear history"].exists)
     }
 
     func testProfileDownReachesHomeAndHistory() {

@@ -2,6 +2,29 @@ import XCTest
 @testable import freeTube
 
 final class RoomDiscoveryTests: XCTestCase {
+    @MainActor func testRecentSearchesPersistSixUniqueTermsPerProfileAndClear() throws {
+        let suite = "recent-searches-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let history = RoomSearchHistory(defaults: defaults)
+        history.select(.local)
+        for term in ["one", "two", "three", "four", "five", "six", "seven", " Three ", "  "] {
+            history.record(term)
+        }
+        let reopened = RoomSearchHistory(defaults: defaults)
+        reopened.select(.local)
+        XCTAssertEqual(reopened.terms, ["Three", "seven", "six", "five", "four", "two"])
+        reopened.select(.profile("some-channel"))
+        XCTAssertTrue(reopened.terms.isEmpty)
+        reopened.record("another search")
+        reopened.select(.local)
+        reopened.clear()
+        history.select(.profile("some-channel"))
+        XCTAssertEqual(history.terms, ["another search"])
+        history.select(.local)
+        XCTAssertTrue(history.terms.isEmpty)
+    }
+
     private func video(_ id: String, by creator: String, day: Int = 0) -> ChannelVideo {
         ChannelVideo(id: id, title: id, channelID: creator, channelTitle: creator, thumbnail: nil,
                      publishedAt: Date(timeIntervalSince1970: Double(day) * 86_400))

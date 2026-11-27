@@ -12,19 +12,40 @@ final class RoomViewingSession {
     private var queue: [ChannelVideo] = []
     private var index = 0
     private var quickCount = 0
+    private var playsRelated = false
+    private var attemptedIDs = Set<String>()
+    @ObservationIgnored private var relatedTask: Task<Void, Never>?
+    @ObservationIgnored private let recommendations: (ChannelVideo) async throws -> [ChannelVideo]
+
     private(set) var queueNotice: String?
     @ObservationIgnored private var noticeTimer: Task<Void, Never>?
     @ObservationIgnored private var loading: Task<Void, Never>?
+
+    init(recommendations: @escaping (ChannelVideo) async throws -> [ChannelVideo] = ChannelCatalog().similarVideos) {
+        self.recommendations = recommendations
+    }
 
     var video: ChannelVideo? { queue.indices.contains(index) ? queue[index] : nil }
     var next: ChannelVideo? { queue.indices.contains(index + 1) ? queue[index + 1] : nil }
 
     func open(_ video: ChannelVideo, in queue: [ChannelVideo]) {
+        guard queue.contains(where: { $0.id == video.id }) else { return }
+        start(video, in: [video], related: true)
+    }
+
+    func openPlaylist(_ video: ChannelVideo, in queue: [ChannelVideo]) {
+        start(video, in: queue, related: false)
+    }
+
+    private func start(_ video: ChannelVideo, in queue: [ChannelVideo], related: Bool) {
         guard let position = queue.firstIndex(where: { $0.id == video.id && $0.channelID == video.channelID }) else { return }
-        if presentation == .mini, self.video?.id == video.id, self.video?.channelID == video.channelID {
+        if presentation == .mini, self.video?.id == video.id, self.video?.channelID == video.channelID,
+           related == playsRelated, related || queue == self.queue {
             expand()
             return
         }
+        playsRelated = related
+        attemptedIDs = []
         quickCount = 0
         self.queue = queue
         index = position
@@ -32,8 +53,17 @@ final class RoomViewingSession {
         load()
     }
 
-    func queueFromMini(_ pick: ChannelVideo, seconds: Int?, store: RoomPlaylistStore) {
-        guard presentation == .mini else { return }
+    func addToQuickPlaylist(_ pick: ChannelVideo, seconds: Int?, store: RoomPlaylistStore) {
+        do {
+            try store.saveQuickPick(pick, seconds: seconds)
+        } catch {
+            showNotice(error.localizedDescription)
+            return
+        }
+        guard presentation != .closed else {
+            showNotice("Saved to Quick Playlist · " + pick.title)
+            return
+        }
         let start = index + 1
         let insertion = start + quickCount
         if video?.id == pick.id {
@@ -44,15 +74,11 @@ final class RoomViewingSession {
             showNotice("Already queued · " + pick.title)
             return
         }
-        do {
-            try store.saveQuickPick(pick, seconds: seconds)
-            let remainder = queue[insertion...].filter { $0.id != pick.id }
-            queue.replaceSubrange(insertion..., with: [pick] + remainder)
-            quickCount += 1
-            showNotice("Queued · " + pick.title)
-        } catch {
-            showNotice(error.localizedDescription)
-        }
+        let remainder = queue[insertion...].filter { $0.id != pick.id }
+        queue.replaceSubrange(insertion..., with: [pick] + remainder)
+        quickCount += 1
+        playback.prepareNext(next)
+        showNotice("Queued · " + pick.title)
     }
 
     private func showNotice(_ text: String) {
@@ -86,22 +112,54 @@ final class RoomViewingSession {
         guard next != nil else { return }
         if quickCount > 0 { quickCount -= 1 }
         index += 1
-        load()
+        load(usePrepared: true)
     }
 
-    func load() {
+    // Keep explicit picks at the front. Replace old recommendations as soon as
+    // the new video starts, so every automatic transition uses its own watch page.
+    private func prepareRelated(for video: ChannelVideo) {
+        let start = index + 1 + quickCount
+        queue.removeSubrange(start...)
+        playback.prepareNext(next)
+        relatedTask = Task {
+            guard !Task.isCancelled else { return }
+            let matches = (try? await recommendations(video)) ?? []
+            guard !Task.isCancelled else { return }
+            var excluded = attemptedIDs.union(queue.map(\.id))
+            queue.append(contentsOf: matches.filter { excluded.insert($0.id).inserted })
+            playback.prepareNext(next)
+        }
+    }
+
+    func load(usePrepared: Bool = false) {
         guard let video else { return }
         loading?.cancel()
-        playback.stop()
+        relatedTask?.cancel()
+        relatedTask = nil
+        attemptedIDs.insert(video.id)
+        if !usePrepared { playback.stop() }
         loading = Task { @MainActor [onVideoStarted] in
             guard !Task.isCancelled else { return }
-            await playback.play(video) { onVideoStarted?(video) }
+            await playback.play(video, usePrepared: usePrepared) {
+                onVideoStarted?(video)
+                if playsRelated { prepareRelated(for: video) }
+                else { playback.prepareNext(next) }
+            }
             guard !Task.isCancelled else { return }
-            if case .failed = playback.phase, presentation == .mini, quickCount > 0 {
+            if case .failed = playback.phase, next != nil, playsRelated || (presentation == .mini && quickCount > 0) {
                 advance()
                 return
             }
             guard playback.phase == .finished else { return }
+            if playsRelated, next == nil {
+                await relatedTask?.value
+                guard !Task.isCancelled else { return }
+                if next == nil {
+                    prepareRelated(for: video)
+                    await relatedTask?.value
+                }
+            }
+            guard !Task.isCancelled else { return }
             if next != nil { advance() }
             else if presentation == .mini { close() }
         }
@@ -110,6 +168,9 @@ final class RoomViewingSession {
     func close() {
         loading?.cancel()
         loading = nil
+        relatedTask?.cancel()
+        relatedTask = nil
+        attemptedIDs = []
         playback.stop()
         presentation = .closed
         noticeTimer?.cancel()

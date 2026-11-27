@@ -1,8 +1,51 @@
 import SwiftUI
 
+extension EnvironmentValues {
+    @Entry var visitSearchCreator: ((RoomChannel) -> Void)? = nil
+}
+
+@MainActor @Observable
+final class RoomSearchHistory {
+    private let defaults: UserDefaults
+    private var key: String?
+    private(set) var terms: [String] = []
+
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    func select(_ scope: RoomDiscoveryCache.Scope?) {
+        let owner: String
+        switch scope {
+        case .local: owner = "guest"
+        case .profile(let id): owner = id
+        case nil: return
+        }
+        let next = "room.recent-searches.v1." + owner
+        guard key != next else { return }
+        let pending = key == nil ? terms : []
+        key = next
+        terms = Array((defaults.stringArray(forKey: next) ?? []).prefix(6))
+        for term in pending.reversed() { record(term) }
+    }
+
+    func record(_ query: String) {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return }
+        terms.removeAll { $0.caseInsensitiveCompare(term) == .orderedSame }
+        terms.insert(term, at: 0)
+        terms = Array(terms.prefix(6))
+        if let key { defaults.set(terms, forKey: key) }
+    }
+
+    func clear() {
+        terms = []
+        if let key { defaults.removeObject(forKey: key) }
+    }
+}
+
 struct RoomSearchView: View {
     let account: ChannelAccount
     let library: ChannelLibrary
+    let history: RoomSearchHistory
     let open: (RoomChannel) -> Void
     let play: (ChannelVideo, [ChannelVideo]) -> Void
     @State private var query = ""
@@ -24,8 +67,31 @@ struct RoomSearchView: View {
                         .autocorrectionDisabled().textInputAutocapitalization(.never)
                         .submitLabel(.search).onSubmit { submit() }
                     Button("Search") { submit() }.disabled(trimmed.isEmpty)
+                    if !query.isEmpty || !submitted.isEmpty {
+                        Button { clearSearch() } label: { Image(systemName: "xmark.circle") }
+                            .accessibilityLabel("Clear search")
+                    }
                     Button { showAsk = true } label: { Label("Ask AI", systemImage: "sparkles") }
                         .accessibilityIdentifier("search-ask-ai")
+                }
+                if !history.terms.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 20) {
+                            Text("Recent searches").font(.headline)
+                            Button("Clear history") { history.clear() }
+                        }
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 16) {
+                                ForEach(history.terms, id: \.self) { term in
+                                    Button { query = term; submit() } label: {
+                                        Text(term).lineLimit(1).frame(maxWidth: 360)
+                                    }
+                                    .accessibilityLabel(term)
+                                }
+                            }.padding(8)
+                        }.scrollClipDisabled()
+                    }
+                    .buttonStyle(RoomToolbarStyle())
                 }
                 if isLoading { RoomLoading(text: "Searching…") }
                 if let error { RoomNotice(message: error) }
@@ -36,6 +102,7 @@ struct RoomSearchView: View {
                 if !videos.isEmpty {
                     Text("Videos").font(.title2.bold())
                     RoomVideoGrid(videos: videos) { video in play(video, videos) }
+                        .environment(\.visitSearchCreator, open)
                 }
                 if attempted && channels.isEmpty && videos.isEmpty && error == nil && !isLoading {
                     Text("No results for “\(submitted)”.")
@@ -55,6 +122,7 @@ struct RoomSearchView: View {
 
     private func submit() {
         guard !trimmed.isEmpty else { return }
+        history.record(trimmed)
         submitted = trimmed
         attempted = false
         channels = []
@@ -62,6 +130,18 @@ struct RoomSearchView: View {
         error = nil
         next = nil
         revision = UUID()
+    }
+
+    private func clearSearch() {
+        revision = UUID()
+        query = ""
+        submitted = ""
+        channels = []
+        videos = []
+        next = nil
+        attempted = false
+        isLoading = false
+        error = nil
     }
 
     @MainActor private func search() async {

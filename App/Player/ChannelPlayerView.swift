@@ -31,7 +31,7 @@ struct ChannelPlayerView: View {
             ZStack {
                 Color.black
                 if let video = session.video {
-                    if session.playback.phase == .playing {
+                    if session.playback.phase == .playing || (session.playback.phase == .finished && session.playback.hasPreparedNext) {
                         NativePlayer(session: session, miniature: mini, showingSheet: sheet != nil,
                                      openPanel: { sheet = .details($0, video) }, save: { sheet = .playlist(video) })
                             .accessibilityIdentifier("native-playback")
@@ -150,6 +150,7 @@ private struct NativePlayer: UIViewControllerRepresentable {
         var next: ChannelVideo?
         var configuredSpeed: Float?
         var showingSheet = false
+        let shade = UIView()
         weak var similarOverlay: UIViewController?
 
         init(session: RoomViewingSession) { self.session = session }
@@ -174,6 +175,15 @@ private struct NativePlayer: UIViewControllerRepresentable {
         // The browsing window hosts this same controller and routes remote presses to the catalog.
         controller.allowsPictureInPicturePlayback = false
         controller.speeds = []
+        if let overlay = controller.contentOverlayView {
+            let shade = context.coordinator.shade
+            shade.frame = overlay.bounds
+            shade.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            shade.backgroundColor = .black
+            shade.alpha = 0
+            shade.isUserInteractionEnabled = false
+            overlay.addSubview(shade)
+        }
         return controller
     }
 
@@ -181,6 +191,7 @@ private struct NativePlayer: UIViewControllerRepresentable {
         controller.showsPlaybackControls = !miniature
         controller.view.isUserInteractionEnabled = !miniature
         let coordinator = context.coordinator
+        coordinator.shade.alpha = session.playback.fadeFraction
         coordinator.showingSheet = showingSheet
         if !miniature, let video = session.video, coordinator.videoID != video.id {
             let panel = RoomPlayerPanelView(panel: .similar, video: video, session: session, onClose: { [weak coordinator] in
@@ -224,7 +235,19 @@ private struct NativePlayer: UIViewControllerRepresentable {
 final class ChannelPlayback {
     enum Phase: Equatable { case loading, playing, finished, failed(String) }
     var phase = Phase.loading
-    let player = AVPlayer()
+    let player: AVQueuePlayer = {
+        let player = AVQueuePlayer()
+        // The session owns queue priority and observes the outgoing item's end.
+        player.actionAtItemEnd = .pause
+        return player
+    }()
+    private(set) var fadeFraction = 0.0
+    private var originalVolume: Float?
+    private var fadeObserver: Any?
+    private var preparedID: String?
+    private var preparedItem: AVPlayerItem?
+    private var preparing: Task<Void, Never>?
+    var hasPreparedNext: Bool { preparedItem != nil }
     private let resolver = PublicVideoPlayer()
     private var activeID = UUID()
     private var statusObservation: NSKeyValueObservation?
@@ -234,8 +257,60 @@ final class ChannelPlayback {
 
     private enum Event: Sendable { case status(AVPlayerItem.Status), started, ended, failed }
 
-    func play(_ video: ChannelVideo, onStart: () -> Void = {}) async {
-        stop()
+    func prepareNext(_ video: ChannelVideo?) {
+        guard video?.id != preparedID else { return }
+        discardPrepared()
+        guard let video, let current = player.currentItem else { return }
+        preparedID = video.id
+        let generation = activeID
+        preparing = Task {
+            do {
+                let item = try await resolveItem(video)
+                guard !Task.isCancelled, activeID == generation, player.currentItem === current,
+                      player.canInsert(item, after: current) else { return }
+                player.insert(item, after: current)
+                preparedItem = item
+            } catch {
+                if !Task.isCancelled { preparedID = nil }
+            }
+        }
+    }
+
+    private func discardPrepared() {
+        preparing?.cancel()
+        preparing = nil
+        if let preparedItem, player.items().contains(preparedItem), player.currentItem !== preparedItem {
+            player.remove(preparedItem)
+        }
+        preparedItem = nil
+        preparedID = nil
+        setFade(0)
+    }
+
+    private func resolveItem(_ video: ChannelVideo) async throws -> AVPlayerItem {
+        let stream = try await resolver.stream(videoID: video.id, channelID: video.channelID)
+        try Task.checkCancellation()
+        let item = try await Self.item(for: stream)
+        item.externalMetadata = [Self.metadata(.commonIdentifierTitle, video.title), Self.metadata(.commonIdentifierArtist, video.channelTitle)]
+        return item
+    }
+
+    func play(_ video: ChannelVideo, usePrepared: Bool = false, onStart: () -> Void = {}) async {
+        if usePrepared, preparedID == video.id, preparedItem == nil {
+            await preparing?.value
+            guard !Task.isCancelled else { return }
+        }
+        let warm = usePrepared && preparedID == video.id ? preparedItem : nil
+        let reuse = warm.flatMap { $0.status == .failed || !player.items().contains($0) ? nil : $0 }
+        if reuse != nil {
+            activeID = UUID()
+            clearObservers()
+            preparedItem = nil
+            discardPrepared()
+            phase = .playing
+        } else {
+            stop()
+        }
         let id = activeID
         let startupDeadline = Task { @MainActor in
             try await Task.sleep(for: .seconds(20))
@@ -247,15 +322,15 @@ final class ChannelPlayback {
         }
         defer { startupDeadline.cancel() }
         do {
-            let stream = try await resolver.stream(videoID: video.id, channelID: video.channelID)
-            guard id == activeID else { return }
-            let item = try await Self.item(for: stream)
+            let item: AVPlayerItem
+            if let reuse { item = reuse }
+            else { item = try await resolveItem(video) }
             try Task.checkCancellation()
             guard id == activeID else { return }
-            item.externalMetadata = [Self.metadata(.commonIdentifierTitle, video.title), Self.metadata(.commonIdentifierArtist, video.channelTitle)]
             let events = observe(item)
             defer { if id == activeID { clearObservers() } }
-            player.replaceCurrentItem(with: item)
+            if reuse != nil { player.advanceToNextItem() }
+            else { player.replaceCurrentItem(with: item) }
             player.play()
             for await event in events {
                 guard !Task.isCancelled, id == activeID else { return }
@@ -263,6 +338,11 @@ final class ChannelPlayback {
                 case .started: recordPlaybackStart(onStart)
                 case .status(.readyToPlay): phase = .playing
                 case .status(.failed), .failed:
+                    // A URL resolved during a long video can expire before its first frame.
+                    if reuse != nil, progressObserver != nil {
+                        await play(video, onStart: onStart)
+                        return
+                    }
                     phase = .failed("freeTube couldn’t play the stream YouTube supplied for this video.")
                     return
                 case .ended:
@@ -281,8 +361,9 @@ final class ChannelPlayback {
     func stop() {
         activeID = UUID()
         clearObservers()
+        discardPrepared()
         player.pause()
-        player.replaceCurrentItem(with: nil)
+        player.removeAllItems()
         phase = .loading
     }
 
@@ -295,6 +376,9 @@ final class ChannelPlayback {
         }
         progressObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 4), queue: .main) { time in
             if time.isNumeric && time > .zero { continuation.yield(.started) }
+        }
+        fadeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 24), queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateFade() }
         }
         let center = NotificationCenter.default
         notificationObservers = [
@@ -315,7 +399,31 @@ final class ChannelPlayback {
         onStart()
     }
 
+    private func updateFade() {
+        guard let preparedItem, preparedItem.status != .failed,
+              let current = player.currentItem, current.duration.isNumeric, player.rate > 0 else {
+            setFade(0)
+            return
+        }
+        let end = current.forwardPlaybackEndTime.isNumeric
+            ? CMTimeMinimum(current.duration, current.forwardPlaybackEndTime) : current.duration
+        let remaining = (end.seconds - player.currentTime().seconds) / Double(player.rate)
+        setFade(remaining.isFinite ? min(1, max(0, 1 - remaining / 0.35)) : 0)
+    }
+
+    private func setFade(_ fraction: Double) {
+        guard fraction != fadeFraction else { return }
+        if fraction > 0, originalVolume == nil { originalVolume = player.volume }
+        fadeFraction = fraction
+        if let originalVolume { player.volume = originalVolume * Float(1 - fraction) }
+        if fraction == 0 { originalVolume = nil }
+    }
+
     private func clearObservers() {
+        if let fadeObserver {
+            player.removeTimeObserver(fadeObserver)
+            self.fadeObserver = nil
+        }
         eventsContinuation?.finish()
         eventsContinuation = nil
         statusObservation?.invalidate()

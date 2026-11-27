@@ -63,6 +63,7 @@ private struct RoomShell: View {
     let onPlay: (ChannelVideo, [ChannelVideo]) -> Void
     @State private var library = ChannelLibrary()
     @State private var history = RoomWatchHistoryStore()
+    @State private var recentSearches = RoomSearchHistory()
     @State private var section = RoomSection.discover
     @State private var chosenCategory: RoomDiscoverCategory?
     @State private var categoryCatalog = RoomCategoryCatalog()
@@ -101,6 +102,10 @@ private struct RoomShell: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             browse
+            if viewing.presentation == .closed, let notice = viewing.queueNotice {
+                Text(notice).font(.headline).padding().background(.regularMaterial, in: Capsule())
+                    .padding(24).allowsHitTesting(false)
+            }
             if viewing.presentation == .mini {
                 ChannelPlayerView(session: viewing, mini: true)
                     .frame(width: ChannelPlayerView.miniVideoWidth, height: ChannelPlayerView.miniHeight)
@@ -148,16 +153,16 @@ private struct RoomShell: View {
                         case .settings: RoomDiscoverSettings(preferences: preferences, focus: $focus)
                         case .home: home
                         case .channels:
-                            RoomSubscriptionsView(library: library, focus: $focus, play: play, openChannel: { channel = $0 },
+                            RoomSubscriptionsView(library: library, focus: $focus, play: onPlay, openChannel: { channel = $0 },
                                                   findChannels: { section = .search })
                         case .assistant:
                             RoomAskView(inSidebar: true)
                         case .playlists:
-                            RoomPlaylistsView(focus: $focus, play: onPlay)
+                            RoomPlaylistsView(focus: $focus, play: viewing.openPlaylist)
                         case .history:
                             RoomWatchHistoryView(store: history, focus: $focus, play: onPlay, browse: { choose(.home) })
                         case .search:
-                            RoomSearchView(account: account, library: library, open: { channel = $0 }, play: onPlay)
+                            RoomSearchView(account: account, library: library, history: recentSearches, open: { channel = $0 }, play: onPlay)
                         }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
@@ -205,6 +210,7 @@ private struct RoomShell: View {
         .task(id: library.refreshID) { await library.refresh(account: account) }
         .onChange(of: RoomWatchHistoryStore.Scope(signedIn: account.isSignedIn, profileID: library.profile?.id), initial: true) { _, scope in
             history.select(scope)
+            recentSearches.select(scope)
             viewing.onVideoStarted = { [weak history, weak account, id = account.sessionID] video in
                 guard account?.sessionID == id else { return }
                 history?.record(video)
@@ -342,21 +348,8 @@ private struct RoomShell: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            RoomHomeShelves(library: library, focus: $focus, play: play, discover: { onPlay($0, [$0]) },
+            RoomHomeShelves(library: library, focus: $focus, play: onPlay, discover: { onPlay($0, [$0]) },
                             options: { featureOptions = true }, openMenu: { menuOpen = true })
-        }
-    }
-
-    private func play(_ video: ChannelVideo, _ context: [ChannelVideo]) {
-        let followed = library.followed
-        // Public search reports approximate dates. Start that selection immediately and
-        // continue with dated uploads from the user's followed feed.
-        if video.publishedAt == .distantPast {
-            let following = ChannelVideo.chronological(context.filter { $0.id != video.id }, followed: followed)
-            onPlay(video, [video] + following)
-        } else {
-            let queue = ChannelVideo.chronological([video] + context, followed: followed)
-            onPlay(video, queue)
         }
     }
 }

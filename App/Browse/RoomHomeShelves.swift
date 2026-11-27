@@ -315,33 +315,44 @@ private struct VideoPlaylistMenu: ViewModifier {
     @Environment(ChannelLibrary.self) private var library
     @Environment(RoomViewingSession.self) private var viewing
     @Environment(RoomPlaylistStore.self) private var playlists
+    @Environment(ChannelAccount.self) private var account
+    @Environment(\.visitSearchCreator) private var visitSearchCreator
     @State private var adding = false
+    @State private var creator: RoomChannel?
 
     func body(content: Content) -> some View {
-        if viewing.presentation == .mini {
-            content
-                .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
-                    viewing.queueFromMini(video, seconds: seconds, store: playlists)
-                })
-                .accessibilityAction(named: "Queue in Quick Playlist") {
-                    viewing.queueFromMini(video, seconds: seconds, store: playlists)
-                }
-        } else {
-            content
-                .contextMenu {
-                    Button { adding = true } label: { Label("Add to playlist", systemImage: "text.badge.plus") }
-                    if ChannelAddress.isID(video.channelID), !library.followed.contains(video.channelID) {
+        content
+            .contextMenu {
+                Button {
+                    viewing.addToQuickPlaylist(video, seconds: seconds, store: playlists)
+                } label: { Label("Add to Quick Playlist", systemImage: "text.line.first.and.arrowtriangle.forward") }
+                Button { adding = true } label: { Label("Add to playlist", systemImage: "text.badge.plus") }
+                if ChannelAddress.isID(video.channelID) {
+                    let channel = library.channels.first { $0.id == video.channelID }
+                        ?? RoomChannel(id: video.channelID, title: video.channelTitle)
+                    Button {
+                        if let visitSearchCreator { visitSearchCreator(channel) }
+                        else { creator = channel }
+                    } label: { Label("Visit Creator", systemImage: "person.crop.rectangle") }
+                    if !library.followed.contains(channel.id) {
                         Button {
-                            guard !library.followed.contains(video.channelID) else { return }
-                            library.toggle(RoomChannel(id: video.channelID, title: video.channelTitle), preview: [video])
+                            guard !library.followed.contains(channel.id) else { return }
+                            library.toggle(channel, preview: [video])
                             library.requestRefresh()
                         } label: { Label("Follow channel on this TV", systemImage: "person.badge.plus") }
                     }
                 }
-                .sheet(isPresented: $adding) {
-                    RoomAddToPlaylistView(video: video, durationSeconds: seconds ?? video.durationSeconds)
-                }
-        }
+            }
+            .sheet(isPresented: $adding) {
+                RoomAddToPlaylistView(video: video, durationSeconds: seconds ?? video.durationSeconds)
+            }
+            .sheet(item: $creator) { channel in
+                RoomChannelView(account: account, library: library, channel: channel, play: { selected, queue in
+                    creator = nil
+                    viewing.open(selected, in: queue)
+                })
+                .frame(width: 1560, height: 860)
+            }
     }
 }
 
