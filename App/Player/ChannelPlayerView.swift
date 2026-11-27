@@ -8,16 +8,7 @@ struct ChannelPlayerView: View {
     static let miniHeight = miniVideoWidth * 9 / 16 + miniControlsHeight
 
     let session: RoomViewingSession
-    private enum PlayerSheet: Identifiable {
-        case ask(ChannelVideo), save(ChannelVideo)
-        var id: String {
-            switch self {
-            case .ask(let video): "ask-" + video.id
-            case .save(let video): "save-" + video.id
-            }
-        }
-    }
-    @State private var sheet: PlayerSheet?
+    @State private var videoToSave: ChannelVideo?
     @State private var handoffFailed = false
     @FocusState private var youtubeButtonFocused: Bool
 
@@ -29,7 +20,7 @@ struct ChannelPlayerView: View {
                 Color.black
                 if let video = session.video {
                     if session.playback.phase == .playing {
-                        NativePlayer(session: session, miniature: mini, ask: { sheet = .ask(video) }, save: { sheet = .save(video) })
+                        NativePlayer(session: session, miniature: mini) { videoToSave = video }
                             .accessibilityIdentifier("native-playback")
                             .accessibilityHidden(mini)
                             .allowsHitTesting(!mini)
@@ -81,13 +72,8 @@ struct ChannelPlayerView: View {
         .clipShape(RoundedRectangle(cornerRadius: mini ? 14 : 0))
         .overlay { if mini { RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.35), lineWidth: 1) } }
         .ignoresSafeArea(edges: mini ? [] : .all)
-        .onExitCommand(perform: mini || sheet != nil ? nil : { session.close() })
-        .sheet(item: $sheet) { choice in
-            switch choice {
-            case .ask(let video): RoomAskView(video: video, startsTalking: true)
-            case .save(let video): RoomAddToPlaylistView(video: video)
-            }
-        }
+        .onExitCommand(perform: mini || videoToSave != nil ? nil : { session.close() })
+        .sheet(item: $videoToSave) { video in RoomAddToPlaylistView(video: video) }
         .onChange(of: session.playback.phase) { _, phase in
             handoffFailed = false
             if case .failed = phase { youtubeButtonFocused = !mini }
@@ -119,7 +105,6 @@ private struct MiniPlayerButtonStyle: ButtonStyle {
 private struct NativePlayer: UIViewControllerRepresentable {
     let session: RoomViewingSession
     let miniature: Bool
-    let ask: () -> Void
     let save: () -> Void
 
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate {
@@ -168,9 +153,8 @@ private struct NativePlayer: UIViewControllerRepresentable {
         let minimize = UIAction(title: "Watch while browsing", image: UIImage(systemName: "pip.enter")) { _ in
             session.minimize()
         }
-        let assistant = UIAction(title: "Ask AI", image: UIImage(systemName: "sparkles")) { _ in ask() }
         let add = UIAction(title: "Add to playlist", image: UIImage(systemName: "text.badge.plus")) { _ in save() }
-        var controls: [UIMenuElement] = [speed, minimize, assistant, add]
+        var controls: [UIMenuElement] = [speed, minimize, add]
         if let next = session.next {
             controls.append(UIAction(title: "Next: \(next.title)", image: UIImage(systemName: "forward.end.fill")) { _ in
                 session.advance()

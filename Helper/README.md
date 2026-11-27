@@ -1,6 +1,6 @@
 # Free Tube laptop helper
 
-Run the helper on the same network as your Apple TV to use Ask AI. Your laptop sends the question and selected video titles or caption excerpts to Codex through your own ChatGPT sign-in. Ask AI can answer a question, suggest videos, draft a playlist, or suggest additions to a selected playlist. Free-text routing can receive up to 40 local playlist names and IDs. A request for suggestions produces up to three YouTube search phrases. The TV retrieves actual candidates and sends those candidates back for ranking. A summary or timestamp jump needs timed captions for that exact video.
+Run the helper on the same network as your Apple TV to use Ask AI. Your laptop sends the question and selected video metadata to Codex through your own ChatGPT sign-in. Ask AI can answer a question, suggest videos, draft a playlist, or suggest additions to a selected playlist. Free-text routing can receive up to 40 local playlist names and IDs. A request for suggestions produces up to three YouTube search phrases. The TV retrieves actual candidates and sends those candidates back for ranking.
 
 ## Set up Codex
 
@@ -26,21 +26,13 @@ For a signed-in research check, ask “Research the vLLM PagedAttention paper on
 
 The helper verifies live search mode, provider capability, and completed native web-search results. It accepts up to six source links that match URLs or reference IDs from those results. The model’s proposed link alone cannot establish a source. Six web actions and a two-minute timeout bound each research job. If the CLI or subscription cannot provide results, the TV receives an explicit error. [Pinned OpenAI web-search implementation](https://github.com/openai/codex/blob/rust-v0.172.0/codex-rs/ext/web-search/src/tool.rs)
 
-## Timed captions
+## Caption imports for older TV builds
 
-From the player, choose **Ask AI → Summarize this**. If the paired helper has no track, **Use public captions** checks the regular public watch page for that video. Choose this only when you have permission to use its captions with Ask AI. YouTube may return no usable track. You can also copy a permitted transcript with timestamps from **Show transcript**, paste it into Free Tube with the iPhone remote keyboard, then select **Use pasted transcript**. The Mac stores the track for that video and the original request continues.
-
-To import from disk, use a video-relative WebVTT, SRT, or timestamped text file whose captions you own or have permission to use. Replace the sample ID and file path with yours.
+Free Tube builds 20 and earlier can use the helper’s caption endpoints. For those builds, import a video-relative WebVTT, SRT or timestamped text file you have permission to use. Replace the sample ID and file path with yours.
 
 ```sh
 python3 Helper/helper.py import-captions dQw4w9WgXcQ ./captions.vtt --permitted
 ```
-
-Importing replaces that video’s track. Imported cues retain their video ID, start and end times, and cue indices. The TV obtains the selected track over the paired connection. The laptop checks each excerpt against its current imported track, including the exact text and times, before sending the requested cues to Codex.
-
-In a video conversation, ask a question such as “What does the speaker recommend first?” and follow up with “Why that step?” Each question starts a fresh Codex turn. The TV includes up to three earlier exchanges to clarify references such as “that step.” The helper checks their cue indices against the current excerpt and instructs Codex to ground each new statement in those captions. A reply contains up to three short statements with cue references, or an empty list when the captions do not answer the question. The helper keeps no chat transcript on disk.
-
-When updating an existing helper for video conversations, rebuild the image with the setup command above and restart the Python helper to load its updated request validator. Your existing pairing and dedicated sign-in carry over.
 
 ## Status and data
 

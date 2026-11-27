@@ -80,87 +80,45 @@ final class ChannelRoomNavigationTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(seconds, 4, "The video should keep playing while minimized.")
     }
 
-    func testVideoTalkUsesTheRemoteTextField() throws {
+    func testPlayerOffersSaveAndMiniPlayerWithoutAskAI() throws {
         continueAfterFailure = false
         let app = try playSampleMovie()
-        selectTransportAction("Ask AI", in: app)
-        let field = app.textFields["video-talk-prompt"]
-        XCTAssertTrue(field.waitForExistence(timeout: 8))
-        XCTAssertFalse(app.buttons["video-talk-send"].isEnabled)
-        selectWithRemote(field, in: app)
-        app.typeText("What is happening in this video?")
-        if app.keyboards.firstMatch.exists { XCUIRemote.shared.press(.menu) }
-        XCTAssertTrue(field.value as? String == "What is happening in this video?")
-        XCTAssertTrue(app.buttons["video-talk-tools"].exists)
-        if app.buttons["Connect or check helper"].exists {
-            selectWithRemote(app.buttons["video-talk-send"], in: app)
-            XCTAssertTrue(app.staticTexts["Laptop helper"].waitForExistence(timeout: 6))
+        let remote = XCUIRemote.shared
+        remote.press(.up)
+        let player = app.descendants(matching: .any)["native-playback"]
+        let save = player.cells["Add to playlist"]
+        if !save.exists {
+            let more = player.buttons.matching(NSPredicate(format: "label BEGINSWITH[c] 'More'")).firstMatch
+            if more.exists { selectWithRemote(more, in: app) }
         }
-    }
+        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        XCTAssertFalse(player.cells["Ask AI"].exists, "Ask AI should be absent from the player transport controls.")
+        selectWithRemote(save, in: app)
+        let currentPlaylist = app.buttons["Playback test"]
+        XCTAssertTrue(currentPlaylist.waitForExistence(timeout: 5))
+        XCTAssertEqual(currentPlaylist.value as? String, "Already added")
+        XCTAssertFalse(currentPlaylist.isEnabled)
+        selectWithRemote(app.buttons["New playlist"], in: app)
+        XCTAssertTrue(app.textFields["Playlist name"].waitForExistence(timeout: 5))
+        selectWithRemote(app.buttons["Cancel"], in: app)
+        XCTAssertTrue(currentPlaylist.waitForNonExistence(timeout: 5))
 
-    func testVideoTalkSendWithMissingCaptionsFocusesTheNextAction() throws {
-        try XCTSkipUnless(ProcessInfo.processInfo.environment["FREETUBE_EMPTY_TALK_TEST"] == "1",
-                          "Requires an empty paired helper with a permitted sample caption fixture.")
-        continueAfterFailure = false
-        let app = try playSampleMovie()
-        selectTransportAction("Ask AI", in: app)
-        let field = app.textFields["video-talk-prompt"]
-        XCTAssertTrue(field.waitForExistence(timeout: 8))
-        selectWithRemote(field, in: app)
-        app.typeText("What signal marks the crossing?")
-        if app.keyboards.firstMatch.exists { XCUIRemote.shared.press(.menu) }
-        let send = app.buttons["video-talk-send"]
-        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 25), .completed)
-        selectWithRemote(send, in: app)
-        let captions = app.buttons["video-public-captions"]
-        XCTAssertTrue(captions.waitForExistence(timeout: 20))
-        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasFocus == true"), object: captions)
-        XCTAssertEqual(XCTWaiter.wait(for: [focused], timeout: 6), .completed,
-                       "Send should reveal and focus the caption choice for the current question.")
-        XCUIRemote.shared.press(.select)
-        XCTAssertTrue(app.buttons["video-talk-stop"].waitForExistence(timeout: 160))
-        XCTAssertTrue(app.descendants(matching: .any)["video-talk-citation"].exists)
-    }
-
-    func testPairedVideoTalkReadsTwoCitedReplies() throws {
-        try XCTSkipUnless(ProcessInfo.processInfo.environment["FREETUBE_LIVE_TALK_TEST"] == "1",
-                          "Requires a paired test helper with permitted captions for the sample movie.")
-        continueAfterFailure = false
-        let app = try playSampleMovie()
-        selectTransportAction("Ask AI", in: app)
-        let field = app.textFields["video-talk-prompt"]
-        XCTAssertTrue(field.waitForExistence(timeout: 8))
-        let stop = app.buttons["video-talk-stop"]
-        let replay = app.buttons["video-talk-replay"]
-        let questions = ["What signal marks the crossing?", "What does it tell the crew?"]
-        for (index, question) in questions.enumerated() {
-            selectWithRemote(field, in: app)
-            app.typeText(question)
-            if index == 0 {
-                app.typeText("\n")
-            } else {
-                // tvOS places its submit button beside the keyboard in a separate window.
-                let keyboardSend = app.buttons.matching(NSPredicate(
-                    format: "label ==[c] 'Send' AND identifier != %@", "video-talk-send"
-                )).firstMatch
-                XCTAssertTrue(keyboardSend.waitForExistence(timeout: 5))
-                selectWithRemote(keyboardSend, in: app)
-            }
-            let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
-                                                      object: app.keyboards.firstMatch)
-            XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 6), .completed,
-                           "The keyboard must dismiss so the player can show progress and replies.")
-            XCTAssertTrue(stop.waitForExistence(timeout: 160), "The validated answer should automatically start reading.")
-            XCTAssertTrue(app.staticTexts[question].exists)
-            XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "video-talk-citation").count > 0)
-            XCTAssertTrue(replay.waitForExistence(timeout: 90), "The system speech synthesizer should finish the answer.")
-        }
-        XCTAssertTrue(app.staticTexts["What signal marks the crossing?"].exists)
-        selectWithRemote(replay, in: app)
-        XCTAssertTrue(stop.waitForExistence(timeout: 5))
-        selectWithRemote(stop, in: app)
-        XCTAssertTrue(replay.waitForExistence(timeout: 5))
+        selectTransportAction("Watch while browsing", in: app)
+        let expand = app.buttons["mini-expand"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 6))
+        // Playback started in playlist details. Back returns to the library before opening the sidebar.
+        let assistant = app.buttons["nav-assistant"]
+        remote.press(.menu)
+        if !assistant.waitForExistence(timeout: 2) { remote.press(.menu) }
+        XCTAssertTrue(assistant.waitForExistence(timeout: 5))
+        selectWithRemote(assistant, in: app)
+        XCTAssertTrue(app.textFields["assistant-prompt"].waitForExistence(timeout: 6))
+        XCTAssertTrue(expand.exists)
+        XCTAssertFalse(app.buttons["video-talk-start"].exists, "Sidebar Ask AI should not offer a shortcut for the playing video.")
+        remote.press(.menu)
+        selectWithRemote(app.buttons["drawer-mini-expand"], in: app)
+        XCTAssertTrue(player.waitForExistence(timeout: 6))
+        XCTAssertFalse(expand.exists)
     }
 
     func testPlaylistThumbnailTilesNavigateAndReorderWithRemote() throws {
