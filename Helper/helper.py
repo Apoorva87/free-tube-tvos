@@ -22,7 +22,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from approved_captions import import_captions, load_captions
+from approved_captions import import_captions, load_captions, parse_track, save_captions
+from public_captions import public_track
 from contracts import MAX_BODY, VIDEO_ID, Problem, decode, fields, require, valid_answer, valid_request
 
 IMAGE = "freetube-codex:0.172.0"
@@ -220,10 +221,25 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "POST" and self.path == "/v1/ask":
             return service.ask(self.body())
         prefix = "/v1/captions/"
-        if self.command == "GET" and self.path.startswith(prefix):
+        if self.command in ("GET", "POST") and self.path.startswith(prefix):
             video = self.path[len(prefix):]
             require(VIDEO_ID.fullmatch(video), "Invalid video ID.")
-            return {"videoID": video, "cues": load_captions(service.directory, video)}
+            if self.command == "GET":
+                return {"videoID": video, "cues": load_captions(service.directory, video)}
+            obj = self.body()
+            fields(obj, ("permitted",), ("transcript",))
+            require(obj["permitted"] is True, "Confirm you may use the captions for this video.")
+            if "transcript" in obj:
+                require(isinstance(obj["transcript"], str), "Supply a timestamped transcript.")
+                try:
+                    cues = parse_track(obj["transcript"].encode())
+                except ValueError as err:
+                    raise Problem(422, "invalid_track", str(err))
+            else:
+                cues = load_captions(service.directory, video) or public_track(video)
+            if cues:
+                save_captions(service.directory, video, cues)
+            return {"videoID": video, "cues": cues}
         raise Problem(404, "not_found", "Unknown helper endpoint.")
 
     def request_json(self):

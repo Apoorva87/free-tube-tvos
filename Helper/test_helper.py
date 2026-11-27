@@ -103,6 +103,15 @@ class TransportTest(unittest.TestCase):
         self.assertEqual(self.exchange("POST", "/v1/ask", dict(SUMMARY, apiKey="x"), token)[0], 422)
         self.assertEqual(self.exchange("GET", "/v1/captions/" + VIDEO, token=token), (200, {"videoID": VIDEO, "cues": []}))
         self.assertEqual(self.exchange("GET", "/v1/captions/" + VIDEO)[0], 401)
+        path = "/v1/captions/" + NEXT
+        self.assertEqual(self.exchange("POST", path, {"permitted": True})[0], 401)
+        self.assertEqual(self.exchange("POST", path, {"permitted": False}, token=token)[0], 422)
+        status, track = self.exchange("POST", path, {"permitted": True, "transcript": "0:01 Tune the guitar."}, token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.exchange("GET", path, token=token), (200, track))
+        self.assertEqual(self.exchange("POST", path, {"permitted": True, "transcript": "No timestamps."}, token=token)[0], 422)
+        self.assertEqual(self.exchange("GET", path, token=token), (200, track))
+
         self.assertTrue(Pairing(self.directory, self.pin).authenticated("Bearer " + token))
         self.assertEqual(identity(self.directory)[1], self.pin)
 

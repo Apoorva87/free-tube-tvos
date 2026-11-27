@@ -52,6 +52,8 @@ struct RoomAskView: View {
     @State private var showPairing = false
     @State private var askingAbout: ChannelVideo?
     @State private var offerSearch = false
+    @State private var captionAction: Action?
+    @State private var transcript = ""
     @State private var evidenceItem: AVPlayerItem?
     @State private var activeQuestion: String?
     @State private var reply: String?
@@ -112,6 +114,20 @@ struct RoomAskView: View {
                     HStack { ProgressView(); Text(progress); Button("Cancel") { cancel() } }
                 }
                 if let notice { Text(notice).foregroundStyle(.secondary) }
+                if let captionAction, let video {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Use captions for this video").font(.headline)
+                        Text("If you have permission to use this track with Ask AI, the paired helper can check YouTube or use a transcript you paste with timestamps.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Use public captions") { begin(captionAction, permitted: true) }
+                        TextField("Paste timestamped transcript", text: $transcript)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Button("Use pasted transcript") { begin(captionAction, permitted: true, supplied: transcript) }
+                            .disabled(transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Text("On your Mac you can also import a caption file for video " + video.id + " and try again.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 assistResults
                 if let draft {
                     let total = draft.picks.reduce(0) { $0 + (draft.matches.durations[$1.id] ?? 0) }
@@ -124,31 +140,33 @@ struct RoomAskView: View {
                             chooser = appendFlow
                         }
                     }
+                    RoomVideoGrid(videos: draft.picks, numbered: true, durations: draft.matches.durations) { pick in
+                        play(pick, in: draft.picks)
+                    }
                 }
+                if !answers.isEmpty { Text("Caption summary").font(.title3.bold()) }
                 ForEach(answers) { point in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(point.text).font(.headline)
                         Text("\(point.cue.start.roomTimestamp)  “\(point.cue.text)”").foregroundStyle(.secondary)
                     }
+                    .accessibilityElement(children: .combine)
+                    .focusable()
                 }
                 if let jump {
                     Text("“\(jump.text)”").font(.title3)
                     Button("Jump to \(jump.start.roomTimestamp)") { seek(jump) }
                 }
-                ForEach(suggestions) { match in
-                    Button { play(match) } label: {
-                        VStack(alignment: .leading) {
-                            Text(match.title)
-                            Text(match.channelTitle).font(.caption)
-                        }
-                    }
+                if !suggestions.isEmpty {
+                    RoomVideoGrid(videos: suggestions) { play($0, in: suggestions) }
                 }
                 if video != nil && (offerSearch || !helper.isReady) {
                     Button("Search related videos") { begin(.related) }.disabled(progress != nil)
                 }
             }
-            .frame(maxWidth: 1430, alignment: .leading).padding(inSidebar ? 16 : 48)
+            .frame(minWidth: inSidebar ? nil : 1430, maxWidth: 1430, alignment: .leading).padding(inSidebar ? 16 : 48)
         }
+        .scrollClipDisabled()
         .accessibilityIdentifier("ask-ai")
         .onAppear { helper.start() }
         .onDisappear { if progress != nil { clearRequest() } }
@@ -229,6 +247,7 @@ struct RoomAskView: View {
         editing = nil
         suggestions = []
         offerSearch = false
+        captionAction = nil
         approval = nil
         chooser = nil
         appendFlow = nil
@@ -248,7 +267,7 @@ struct RoomAskView: View {
         }
     }
 
-    private func begin(_ action: Action) {
+    private func begin(_ action: Action, permitted: Bool = false, supplied: String? = nil) {
         guard action == .related || helper.isReady else { notice = helper.statusText; return }
         guard [.related, .summary, .followup].contains(action) || !trimmed.isEmpty else { return }
         clearRequest()
@@ -270,7 +289,12 @@ struct RoomAskView: View {
                 try check(id, item: item)
                 suggestions = Array(result.videos.prefix(8))
             case .summary, .captionQuestion, .jump:
-                try await analyzeCaptions(action, question: question, id: id, item: item)
+                do {
+                    try await analyzeCaptions(action, question: question, id: id, item: item, permitted: permitted, supplied: supplied)
+                } catch {
+                    if permitted, !Task.isCancelled, id == requestID { captionAction = action }
+                    throw error
+                }
             case .find, .playlist, .followup:
                 try await findVideos(action, question: question, id: id, item: item)
             }
@@ -423,19 +447,23 @@ struct RoomAskView: View {
         throw RoomAIError.noSearchResults
     }
 
-    private func analyzeCaptions(_ action: Action, question: String, id: UUID, item: AVPlayerItem?) async throws {
+    private func analyzeCaptions(_ action: Action, question: String, id: UUID, item: AVPlayerItem?,
+                                 permitted: Bool, supplied: String?) async throws {
         guard let video else { throw RoomAIError.staleVideo }
         progress = "Checking for permitted captions…"
-        let received = try await helper.captions(for: video.id)
+        let received = try await helper.captions(for: video.id, permitted: permitted, transcript: supplied)
         try check(id, item: item)
         let rawDuration = item?.duration.seconds
         let duration = rawDuration.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         let track = try RoomAIValidation.validTrack(received, duration: duration)
         guard !track.isEmpty else {
-            notice = "No permitted timestamped captions are available for this video. You can search for a related video."
+            captionAction = action
+            notice = permitted ? "YouTube didn’t supply a readable timestamped track. Paste a transcript or search related videos." :
+                "Your paired helper has no captions for this video yet."
             offerSearch = true
             return
         }
+        transcript = ""
         let cues = RoomAIValidation.excerpts(track, question: question, forJump: action != .summary)
         progress = "Checking \(cues.count) caption cues…"
         let result = try await helper.ask(AIRequest(kind: action == .jump ? .jump : .summary,
@@ -465,9 +493,9 @@ struct RoomAskView: View {
         dismiss()
     }
 
-    private func play(_ suggestion: ChannelVideo) {
-        guard suggestions.contains(where: { $0.id == suggestion.id }) else { return }
+    private func play(_ suggestion: ChannelVideo, in queue: [ChannelVideo]) {
+        guard queue.contains(where: { $0.id == suggestion.id }) else { return }
         if !inSidebar { dismiss() }
-        viewing.open(suggestion, in: suggestions)
+        viewing.open(suggestion, in: queue)
     }
 }

@@ -61,10 +61,64 @@ def parse_vtt(data):
     return [dict(index=i, **cue) for i, cue in enumerate(cues)]
 
 
+def parse_track(data):
+    if len(data) > MAX_FILE:
+        raise ValueError("Caption file is too large.")
+    text = data.decode("utf-8-sig").strip()
+    if text.startswith("WEBVTT"):
+        return parse_vtt(data)
+    if "-->" in text:
+        # SRT uses the same video-relative intervals with decimal commas.
+        text = re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})(?=\s|$)", r"\1.\2", text)
+        return parse_vtt(("WEBVTT\n\n" + text).encode())
+    # The tvOS text field can flatten a multiline paste from the iPhone keyboard.
+    if "\n" not in text and re.match(r"^(?:\d{1,3}:)?\d{1,3}:[0-5]\d\s", text):
+        text = re.sub(r"(?<=\s)(?=(?:\d{1,3}:)?\d{1,3}:[0-5]\d\s)", "\n", text)
+    entries = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = re.fullmatch(r"((?:\d{1,3}:)?\d{1,3}:[0-5]\d)(?:[ \t]+(.*))?", line)
+        if match:
+            parts = [int(part) for part in match[1].split(":")]
+            if len(parts) == 3 and parts[1] >= 60:
+                raise ValueError("Invalid transcript timestamp.")
+            start = 0
+            for part in parts:
+                start = 60 * start + part
+            if start >= 604800 or (entries and start < entries[-1][0]):
+                raise ValueError("Transcript timestamps must follow video order.")
+            if not entries or start != entries[-1][0]:
+                entries.append((start, []))
+            if match[2]:
+                entries[-1][1].append(match[2])
+        elif entries:
+            entries[-1][1].append(line)
+        else:
+            raise ValueError("Paste timestamped transcript lines or a WebVTT or SRT track.")
+    cues = []
+    for index, (start, lines) in enumerate(entries):
+        line = " ".join(" ".join(lines).split())
+        if not line or len(line.encode()) > 2000:
+            raise ValueError("Each timestamp needs caption text of up to 2,000 bytes.")
+        # Copied transcripts give start times only. Cites and jumps use start;
+        # use a minimal interval for the last cue when no following boundary exists.
+        end = entries[index + 1][0] if index + 1 < len(entries) else start + 0.001
+        cues.append(dict(index=index, start=start, end=end, text=line))
+    if not 0 < len(cues) <= 2400:
+        raise ValueError("Supply 1 to 2,400 timestamped captions.")
+    return cues
+
+
 def import_captions(state_dir: Path, video_id: str, source: Path):
-    destination = _destination(state_dir, video_id)
     with Path(source).open("rb") as file:
-        cues = parse_vtt(file.read(MAX_FILE + 1))
+        cues = parse_track(file.read(MAX_FILE + 1))
+    return save_captions(state_dir, video_id, cues)
+
+
+def save_captions(state_dir, video_id, cues):
+    destination = _destination(state_dir, video_id)
     encoded = json.dumps({"videoID": video_id, "cues": cues}, ensure_ascii=False, separators=(",", ":")).encode()
     if len(encoded) > 900_000:
         raise ValueError("Split or shorten this track before importing.")

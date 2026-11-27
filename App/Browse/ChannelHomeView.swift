@@ -407,19 +407,30 @@ struct RoomNotice: View {
     }
 }
 
+struct RoomTileGrid<Content: View>: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        let column = GridItem(.adaptive(minimum: typeSize.isAccessibilitySize ? 410 : 292),
+                              spacing: 22, alignment: .topLeading)
+        LazyVGrid(columns: [column], alignment: .leading, spacing: 24, content: content)
+    }
+}
+
 struct RoomVideoGrid: View {
     let videos: [ChannelVideo]
+    var numbered = false
+    var durations: [String: Int] = [:]
     let action: (ChannelVideo) -> Void
     @Environment(\.roomBrowseFocus) private var suppliedFocus
-    @Environment(\.dynamicTypeSize) private var typeSize
     @FocusState private var localFocus: RoomBrowseFocus?
 
     var body: some View {
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 22, alignment: .topLeading),
-                            count: typeSize.isAccessibilitySize ? 3 : 5)
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 24) {
-            ForEach(videos) { video in
-                RoomVideoTile(video: video, focus: suppliedFocus ?? $localFocus) { action(video) }
+        RoomTileGrid {
+            ForEach(Array(videos.enumerated()), id: \.element.id) { index, video in
+                RoomVideoTile(video: video, focus: suppliedFocus ?? $localFocus,
+                              position: numbered ? index + 1 : nil, seconds: durations[video.id]) { action(video) }
             }
         }
     }

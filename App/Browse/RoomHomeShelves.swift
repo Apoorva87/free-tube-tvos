@@ -217,49 +217,39 @@ struct RoomVideoTile: View {
     let focus: FocusState<RoomBrowseFocus?>.Binding
     var discoveryShelfID: String? = nil
     var portrait = false
+    var position: Int? = nil
+    var seconds: Int? = nil
     let action: () -> Void
     @State private var addingToPlaylist = false
 
     var body: some View {
         Button(action: action) {
-            RoomVideoTileLabel(video: video, portrait: portrait)
+            RoomVideoTileLabel(video: video, portrait: portrait, position: position, seconds: seconds)
         }
         .buttonStyle(VideoButtonStyle()).focused(focus, equals: .video(video.id))
         .contextMenu {
             Button { addingToPlaylist = true } label: { Label("Add to playlist", systemImage: "text.badge.plus") }
         }
-        .sheet(isPresented: $addingToPlaylist) { RoomAddToPlaylistView(video: video) }
+        .sheet(isPresented: $addingToPlaylist) { RoomAddToPlaylistView(video: video, durationSeconds: seconds ?? video.durationSeconds) }
         .accessibilityIdentifier((discoveryShelfID.map { "discovery-" + $0 + "-" } ?? "video-") + video.id)
     }
 }
 
-private struct RoomVideoTileLabel: View {
+struct RoomVideoTileLabel: View {
     let video: ChannelVideo
-    let portrait: Bool
+    var portrait = false
+    var position: Int? = nil
+    var seconds: Int? = nil
     @Environment(\.isFocused) private var selected
     @Environment(\.roomVideoFacts) private var facts
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Color.clear.aspectRatio(portrait ? 9.0 / 14.0 : 16.0 / 9.0, contentMode: .fit)
-                .overlay { RoomArtwork(url: video.thumbnail, placeholder: "play.rectangle") }
-                .overlay(alignment: .bottomTrailing) {
-                    if let fact = facts[video.id], fact.live || fact.duration != nil {
-                        Text(fact.live ? "LIVE" : fact.duration ?? "")
-                            .font(.system(size: 20, weight: .semibold)).foregroundStyle(.white)
-                            .monospacedDigit().padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(fact.live ? Color.red : Color.black.opacity(0.84), in: RoundedRectangle(cornerRadius: 4))
-                            .padding(7)
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 15))
-                .overlay {
-                    if selected {
-                        RoundedRectangle(cornerRadius: 18).strokeBorder(.white, lineWidth: 5).padding(-5)
-                    }
-                }
-                .padding(.bottom, 7)
+            let fact = facts[video.id]
+            let duration = fact?.duration ?? (seconds ?? video.durationSeconds).map(RoomPlaylist.clock)
+            RoomTileArtwork(url: video.thumbnail ?? video.coverThumbnail, placeholder: "play.rectangle",
+                            portrait: portrait, position: position, duration: duration, live: fact?.live == true)
             Text(video.title).font(typeSize.isAccessibilitySize ? .headline : .system(size: 26, weight: .semibold))
                 .foregroundStyle(selected ? .white : Color(white: 0.90))
                 .lineLimit(2, reservesSpace: true).multilineTextAlignment(.leading)
@@ -271,7 +261,42 @@ private struct RoomVideoTileLabel: View {
     }
 }
 
-private struct VideoButtonStyle: ButtonStyle {
+struct RoomTileArtwork: View {
+    let url: URL?
+    let placeholder: String
+    var portrait = false
+    var position: Int? = nil
+    var duration: String? = nil
+    var live = false
+    @Environment(\.isFocused) private var focused
+
+    var body: some View {
+        Color.clear.aspectRatio(portrait ? 9.0 / 14.0 : 16.0 / 9.0, contentMode: .fit)
+            .overlay { RoomArtwork(url: url, placeholder: placeholder) }
+            .overlay(alignment: .topLeading) {
+                if let position {
+                    badge(String(position)).accessibilityLabel("Position \(position)")
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if live { badge("LIVE", color: .red) }
+                else if let duration { badge(duration) }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 15))
+            .overlay {
+                if focused { RoundedRectangle(cornerRadius: 18).strokeBorder(.white, lineWidth: 5).padding(-5) }
+            }
+            .padding(.bottom, 7)
+    }
+
+    private func badge(_ text: String, color: Color = .black.opacity(0.84)) -> some View {
+        Text(text).font(.system(size: 20, weight: .semibold)).foregroundStyle(.white)
+            .monospacedDigit().padding(.horizontal, 6).padding(.vertical, 2)
+            .background(color, in: RoundedRectangle(cornerRadius: 4)).padding(7)
+    }
+}
+
+struct VideoButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.opacity(configuration.isPressed ? 0.82 : 1)
     }

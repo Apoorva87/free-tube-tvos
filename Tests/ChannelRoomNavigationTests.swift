@@ -1,7 +1,65 @@
 import XCTest
+import UIKit
 
 @MainActor
 final class ChannelRoomNavigationTests: XCTestCase {
+    func testPlaylistThumbnailTilesNavigateAndReorderWithRemote() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let playlistID = UUID()
+        let titles = ["KV cache basics", "Memory bandwidth", "Paged attention"]
+        let colors: [UIColor] = [.systemTeal, .systemIndigo, .systemOrange]
+        let videos: [[String: Any]] = titles.enumerated().map { index, title in
+            let bounds = CGRect(x: 0, y: 0, width: 16, height: 9)
+            let artwork = UIGraphicsImageRenderer(bounds: bounds).pngData { context in
+                colors[index].setFill()
+                context.fill(bounds)
+            }
+            return ["id": "sampleTile0" + String(index), "title": title, "channelID": "sample-channel",
+             "channelTitle": "Systems Lab", "publishedAt": Date(), "durationSeconds": 150 + index,
+             "thumbnail": ["relative": "data:image/png;base64," + artwork.base64EncodedString()]]
+        }
+        let archive: [String: Any] = ["version": 1, "playlists": [
+            ["id": playlistID.uuidString, "title": "Systems playlist", "videos": videos]
+        ]]
+        let data = try PropertyListSerialization.data(fromPropertyList: archive, format: .binary, options: 0)
+        // NSArgumentDomain supplies this archive for this launch only.
+        app.launchArguments = ["-room.playlists.v1", "<" + data.map { String(format: "%02x", $0) }.joined() + ">"]
+        app.launch()
+        let remote = XCUIRemote.shared
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-playlists"], in: app)
+        let cover = app.descendants(matching: .any)["playlist-" + playlistID.uuidString]
+        XCTAssertTrue(cover.waitForExistence(timeout: 6))
+        selectWithRemote(cover, in: app)
+        let first = app.buttons["video-sampleTile00"], second = app.buttons["video-sampleTile01"]
+        XCTAssertTrue(first.waitForExistence(timeout: 6))
+        XCTAssertEqual(first.frame.minY, second.frame.minY, accuracy: 5)
+        XCTAssertLessThan(first.frame.maxX, second.frame.minX)
+        XCTAssertTrue(focusWithRemote(first, in: app))
+        remote.press(.right)
+        XCTAssertTrue(second.hasFocus)
+        capture("Playlist thumbnail tiles")
+        selectWithRemote(app.buttons["Edit playlist"], in: app)
+        let editable = app.descendants(matching: .any)["playlist-edit-sampleTile01"]
+        XCTAssertTrue(editable.waitForExistence(timeout: 6))
+        selectWithRemote(editable, in: app)
+        let earlier = element(labeled: "Move earlier", in: app)
+        XCTAssertTrue(earlier.waitForExistence(timeout: 5))
+        selectWithRemote(earlier, in: app)
+        let previous = app.descendants(matching: .any)["playlist-edit-sampleTile00"]
+        let reordered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            editable.frame.midX < previous.frame.midX
+        }, object: nil)
+        if XCTWaiter.wait(for: [reordered], timeout: 5) != .completed {
+            attachHierarchy(app, named: "Playlist order after moving earlier")
+            XCTFail("The second video should occupy the first tile.")
+        }
+        selectWithRemote(app.buttons["Cancel"], in: app)
+        XCTAssertTrue(first.waitForExistence(timeout: 6))
+        XCTAssertLessThan(first.frame.midX, second.frame.midX)
+    }
+
     func testPlaylistEditorAndAskAIAreReachableWithTheRemote() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

@@ -120,9 +120,11 @@ import Observation
         return plan
     }
 
-    func captions(for videoID: String) async throws -> [AICue] {
+    func captions(for videoID: String, permitted: Bool = false, transcript: String? = nil) async throws -> [AICue] {
+        struct CaptionImport: Encodable { let permitted: Bool; let transcript: String? }
         guard RoomAIValidation.validID(videoID) else { throw RoomHelperError.message("The video ID is invalid.") }
-        let data = try await authorized(path: "v1/captions/" + videoID, timeout: 15, limit: 1_048_576)
+        let body = permitted ? try JSONEncoder().encode(CaptionImport(permitted: true, transcript: transcript)) : nil
+        let data = try await authorized(path: "v1/captions/" + videoID, body: body, timeout: permitted ? 40 : 15, limit: 1_048_576)
         guard let response = try? JSONDecoder().decode(Captions.self, from: data), response.videoID == videoID else {
             throw RoomHelperError.invalidResponse
         }

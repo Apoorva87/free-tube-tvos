@@ -28,7 +28,9 @@ The helper verifies live search mode, provider capability, and completed native 
 
 ## Timed captions
 
-Import a video-relative WebVTT file whose captions you own or have permission to use. Replace the sample ID and file path with yours.
+From the player, choose **Ask AI → Summarize this**. If the paired helper has no track, **Use public captions** checks the regular public watch page for that video. Choose this only when you have permission to use its captions with Ask AI. YouTube may return no usable track. You can also copy a permitted transcript with timestamps from **Show transcript**, paste it into Free Tube with the iPhone remote keyboard, then select **Use pasted transcript**. The Mac stores the track for that video and the original request continues.
+
+To import from disk, use a video-relative WebVTT, SRT, or timestamped text file whose captions you own or have permission to use. Replace the sample ID and file path with yours.
 
 ```sh
 python3 Helper/helper.py import-captions dQw4w9WgXcQ ./captions.vtt --permitted
