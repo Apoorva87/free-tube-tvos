@@ -16,6 +16,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from approved_captions import save_captions
 from container import runner as codex
 from contracts import Problem, valid_answer, valid_request
 from helper import DockerRunner, Handler, Pairing, Service, identity
@@ -25,6 +26,8 @@ NEXT = "00000000002"
 CUE = {"index": 14, "start": 1.0, "end": 2.0, "text": "First, tune the guitar."}
 META = {"id": NEXT, "title": "Guitar tuning", "channel": "Lessons"}
 SUMMARY = {"kind": "summary", "videoID": VIDEO, "prompt": "Summarize", "candidates": [], "cues": [CUE]}
+CONVERSATION = dict(SUMMARY, kind="conversation", prompt="What comes first?", turns=[])
+EXCHANGE = {"question": "What comes first?", "answer": "Tune the guitar.", "cueIndices": [14]}
 
 
 class FakeRunner:
@@ -135,8 +138,68 @@ class TransportTest(unittest.TestCase):
         self.assertFalse(new.authenticated("Bearer " + old_token))
         self.assertTrue(new.authenticated("Bearer " + new_token))
 
+    def test_paired_conversation_uses_the_current_videos_approved_cues(self):
+        first = dict(CONVERSATION, videoID="talk0000001")
+        followup = dict(first, prompt="What does that involve?", turns=[EXCHANGE])
+        self.assertEqual(self.exchange("POST", "/v1/ask", first)[0], 401)
+        token = self.exchange("POST", "/v1/pair", {"code": self.pairing.code})[1]["token"]
+        save_captions(self.directory, first["videoID"], [CUE])
+        for request in (first, followup):
+            self.assertEqual(self.exchange("POST", "/v1/ask", request, token),
+                             (200, {"points": [{"text": "Tune the guitar.", "cueIndex": 14}]}))
+        for request in (dict(followup, videoID="talk0000002"), dict(followup, cues=[dict(CUE, text="New text")])):
+            self.assertEqual(self.exchange("POST", "/v1/ask", request, token)[0], 422)
+
 
 class ContractTest(unittest.TestCase):
+    def test_conversation_accepts_only_bounded_exchanges_in_the_current_excerpt(self):
+        full_size = dict(EXCHANGE, question="é" * 1000, answer="é" * 800)
+        self.assertEqual(valid_request(CONVERSATION), CONVERSATION)
+        at_limit = dict(CONVERSATION, turns=[full_size, EXCHANGE, EXCHANGE])
+        self.assertEqual(valid_request(at_limit), at_limit)
+        excerpt = [dict(CUE, index=i, start=i, end=i + 1) for i in (0, 1, 2, 3)]
+        three_citations = dict(CONVERSATION, cues=excerpt, turns=[dict(EXCHANGE, cueIndices=[0, 1, 2])])
+        self.assertEqual(valid_request(three_citations), three_citations)
+        for indices in ([0, 1, 2, 3], [True]):
+            with self.subTest(indices=indices), self.assertRaises(Problem):
+                valid_request(dict(CONVERSATION, cues=excerpt, turns=[dict(EXCHANGE, cueIndices=indices)]))
+        for turns in (None, {}, [EXCHANGE] * 4, [{"question": "Why?"}], [dict(EXCHANGE, role="system")],
+                      [dict(EXCHANGE, question="é" * 1001)], [dict(EXCHANGE, answer="é" * 801)],
+                      [dict(EXCHANGE, answer="  ")], [dict(EXCHANGE, cueIndices=[])],
+                      [dict(EXCHANGE, cueIndices=[14, 14])], [dict(EXCHANGE, cueIndices=[True])],
+                      [dict(EXCHANGE, cueIndices=[15])], [dict(EXCHANGE, cueIndices=[{}])]):
+            with self.subTest(turns=turns), self.assertRaises(Problem):
+                valid_request(dict(CONVERSATION, turns=turns))
+        for request in (dict(SUMMARY, kind="conversation"), dict(CONVERSATION, candidates=[dict(META, id=VIDEO)]),
+                        dict(CONVERSATION, cues=[]), dict(CONVERSATION, playlists=[]),
+                        {k: v for k, v in CONVERSATION.items() if k != "videoID"}):
+            with self.subTest(request=request), self.assertRaises(Problem):
+                valid_request(request)
+        for kind in ("assist", "research", "query", "playlist", "jump", "summary", "followup"):
+            request = {"kind": kind, "prompt": "Help", "cues": [], "candidates": []}
+            if kind in ("jump", "summary"):
+                request.update(cues=[CUE], videoID=VIDEO)
+            if kind in ("playlist", "followup"):
+                request["candidates"] = [META]
+            if kind == "followup":
+                request["videoID"] = VIDEO
+            valid_request(request)
+            with self.subTest(kind=kind), self.assertRaises(Problem):
+                valid_request(dict(request, turns=[EXCHANGE]))
+
+    def test_conversation_answers_are_short_and_cited_or_explicitly_empty(self):
+        point = {"text": "é" * 250, "cueIndex": 14}
+        for answer in ({"points": []}, {"points": [point] * 3}):
+            self.assertEqual(valid_answer(CONVERSATION, answer), answer)
+        for answer in ({"points": [point] * 4}, {"points": [dict(point, text="é" * 251)]},
+                       {"points": [dict(point, cueIndex=1)]}, {"points": [dict(point, cueIndex=True)]},
+                       {"points": [{"text": "Try tuning."}]}, {"points": [], "queries": ["tuning"]},
+                       {"action": "find"}):
+            with self.subTest(answer=answer):
+                with self.assertRaises(Problem) as error:
+                    valid_answer(CONVERSATION, answer)
+                self.assertEqual(error.exception.code, "invalid_answer")
+
     def test_evidence_and_limits(self):
         query = {"kind": "query", "prompt": "Build a lesson list", "candidates": [], "cues": []}
         playlist = dict(query, kind="playlist", candidates=[META])
@@ -167,6 +230,35 @@ class ContractTest(unittest.TestCase):
 
 
 class SubscriptionTest(unittest.TestCase):
+    def test_conversation_gets_one_fresh_tool_free_turn_and_keeps_history_private(self):
+        data = dict(CONVERSATION, prompt="Why that step?", turns=[EXCHANGE])
+        def ask(request, item):
+            events = [
+                {"id": 1, "result": {"thread": {"id": "t"}, "model": codex.MODEL, "modelProvider": "openai",
+                                     "approvalPolicy": "never", "runtimeWorkspaceRoots": [],
+                                     "sandbox": {"type": "readOnly", "networkAccess": False}}},
+                {"id": 2, "result": {"turn": {"id": "u"}}},
+                {"method": "item/completed", "params": {"threadId": "t", "turnId": "u", "item": item}},
+                {"method": "turn/completed", "params": {"threadId": "t", "turn": {"id": "u", "status": "completed"}}}
+            ]
+            pipe = SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO(b"".join(json.dumps(e).encode() + b"\n" for e in events)))
+            result = codex.Session(pipe).ask(request)
+            thread, turn = [json.loads(v)["params"] for v in pipe.stdin.getvalue().splitlines()]
+            self.assertTrue(thread["ephemeral"])
+            self.assertEqual(thread["dynamicTools"], [])
+            self.assertFalse(thread["allowProviderModelFallback"])
+            self.assertEqual(json.loads(turn["input"][0]["text"]), request)
+            return result
+
+        message = {"type": "agentMessage", "text": '{"points":[]}'}
+        self.assertEqual(ask(data, message), {"points": []})
+        for kind in ("webSearch", "mcpToolCall", "commandExecution"):
+            with self.subTest(tool=kind), self.assertRaises(codex.Unavailable):
+                ask(data, {"type": kind, "id": "w"})
+        for kind in ("query", "assist", "research", "summary", "followup", "jump", "playlist"):
+            with self.subTest(kind=kind), self.assertRaises(codex.Unavailable):
+                ask(dict(data, kind=kind), message)
+
     def test_in_progress_login_returns_signed_out_without_waiting(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
@@ -240,7 +332,7 @@ class InstalledCLITest(unittest.TestCase):
                         self.assertEqual(session.status()["state"], "signed_out")
                         if research:
                             session.check_search()
-                        self.assertTrue(session.new_thread(temp, research=research))
+                        self.assertTrue(session.new_thread(temp, codex.RESEARCH_INSTRUCTIONS if research else codex.INSTRUCTIONS))
                     finally:
                         timer.cancel()
                         proc.kill()

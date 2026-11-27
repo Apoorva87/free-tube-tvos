@@ -20,18 +20,39 @@ struct AIPlaylistReference: Codable, Sendable, Equatable {
     let title: String
 }
 
+struct AIConversationTurn: Codable, Sendable, Equatable {
+    let question: String
+    let answer: String
+    let cueIndices: [Int]
+
+    static func validate(_ turns: [Self], in cues: [AICue]) throws {
+        guard turns.count <= 3 else { throw RoomAIError.invalidProposal }
+        let supplied = Set(cues.map(\.index))
+        for turn in turns {
+            let cited = Set(turn.cueIndices)
+            guard try RoomAIValidation.message(turn.question) != nil,
+                  try RoomAIValidation.message(turn.answer, maxBytes: 1600) != nil,
+                  (1...3).contains(turn.cueIndices.count), cited.count == turn.cueIndices.count,
+                  cited.isSubset(of: supplied) else { throw RoomAIError.invalidProposal }
+        }
+    }
+}
+
 struct AIRequest: Codable, Sendable {
-    enum Kind: String, Codable, Sendable { case query, playlist, summary, jump, followup, assist, research }
+    enum Kind: String, Codable, Sendable { case query, playlist, summary, jump, followup, assist, research, conversation }
+    // A repeated question can have multiple in-flight requests. This ID stays on the TV.
+    let localID = UUID()
     let kind: Kind
     let prompt: String
     var videoID: String? = nil
     var candidates: [AICandidate] = []
     var cues: [AICue] = []
     var playlists: [AIPlaylistReference]? = nil
+    var turns: [AIConversationTurn] = []
 }
 
 extension AIRequest {
-    private enum CodingKeys: String, CodingKey { case kind, prompt, videoID, candidates, cues, playlists }
+    private enum CodingKeys: String, CodingKey { case kind, prompt, videoID, candidates, cues, playlists, turns }
 
     func encode(to encoder: Encoder) throws {
         var data = encoder.container(keyedBy: CodingKeys.self)
@@ -44,7 +65,13 @@ extension AIRequest {
             return
         }
         try data.encodeIfPresent(videoID, forKey: .videoID)
-        try data.encode(candidates, forKey: .candidates)
+        if kind == .conversation {
+            try AIConversationTurn.validate(turns, in: cues)
+            try data.encode(turns, forKey: .turns)
+            try data.encode([AICandidate](), forKey: .candidates)
+        } else {
+            try data.encode(candidates, forKey: .candidates)
+        }
         try data.encode(cues, forKey: .cues)
     }
 
@@ -56,6 +83,10 @@ extension AIRequest {
         candidates = try data.decodeIfPresent([AICandidate].self, forKey: .candidates) ?? []
         cues = try data.decodeIfPresent([AICue].self, forKey: .cues) ?? []
         playlists = try data.decodeIfPresent([AIPlaylistReference].self, forKey: .playlists)
+        if kind == .conversation {
+            turns = try data.decode([AIConversationTurn].self, forKey: .turns)
+            try AIConversationTurn.validate(turns, in: cues)
+        }
     }
 }
 
@@ -118,10 +149,10 @@ enum RoomAIValidation {
         return value
     }
 
-    private static func message(_ raw: String?) throws -> String? {
+    static func message(_ raw: String?, maxBytes: Int = 2000) throws -> String? {
         guard let raw else { return nil }
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, raw.utf8.count <= 2000,
+        guard !value.isEmpty, raw.utf8.count <= maxBytes,
               raw.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) || "\n\t\r".unicodeScalars.contains($0) })
         else { throw RoomAIError.invalidProposal }
         return value
@@ -245,17 +276,17 @@ enum RoomAIValidation {
         guard cues.count <= 2400 else { throw RoomAIError.invalidProposal }
         var used = Set<Int>()
         for cue in cues {
-            guard cue.index >= 0, used.insert(cue.index).inserted, cue.start.isFinite, cue.end.isFinite,
+            guard (0...Int(Int32.max)).contains(cue.index), used.insert(cue.index).inserted, cue.start.isFinite, cue.end.isFinite,
                   cue.start >= 0, cue.end > cue.start, cue.end <= 604800,
-                  text(cue.text, maxBytes: 2000) != nil else { throw RoomAIError.invalidProposal }
+                  cue.text.utf8.count <= 2000, text(cue.text, maxBytes: 2000) != nil else { throw RoomAIError.invalidProposal }
         }
         return cues.filter { cue in duration.map { cue.start < $0 } ?? true }.sorted { $0.start < $1.start }
     }
 
-    static func excerpts(_ cues: [AICue], question: String, forJump: Bool) -> [AICue] {
+    static func excerpts(_ cues: [AICue], question: String, forJump: Bool, retaining cited: Set<Int> = []) -> [AICue] {
         guard !cues.isEmpty else { return [] }
         let words = Set(question.lowercased().split { !$0.isLetter && !$0.isNumber }.filter { $0.count >= 3 }.map(String.init))
-        var priority: [Int] = []
+        var priority = cited.isEmpty ? [] : cues.indices.filter { cited.contains(cues[$0].index) }
         if forJump {
             var hits: [(index: Int, score: Int)] = []
             for (index, cue) in cues.enumerated() {

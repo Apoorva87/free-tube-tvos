@@ -84,7 +84,7 @@ struct ChannelPlayerView: View {
         .onExitCommand(perform: mini || sheet != nil ? nil : { session.close() })
         .sheet(item: $sheet) { choice in
             switch choice {
-            case .ask(let video): RoomAskView(video: video)
+            case .ask(let video): RoomAskView(video: video, startsTalking: true)
             case .save(let video): RoomAddToPlaylistView(video: video)
             }
         }

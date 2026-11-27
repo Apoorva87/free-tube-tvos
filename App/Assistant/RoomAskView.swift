@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import Combine
 
 private struct AskDraft: Identifiable {
     let id = UUID()
@@ -29,6 +30,14 @@ private struct CitedAnswer: Identifiable {
     let cue: AICue
 }
 
+private struct TalkReply: Identifiable {
+    let id = UUID()
+    let question: String
+    let points: [CitedAnswer]
+
+    var spokenText: String { points.map(\.text).joined(separator: " ") }
+}
+
 @MainActor
 struct RoomAskView: View {
     let video: ChannelVideo?
@@ -39,7 +48,14 @@ struct RoomAskView: View {
     @Environment(ChannelAccount.self) private var account
     @Environment(RoomViewingSession.self) private var viewing
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var prompt: String
+    @State private var isTalking: Bool
+    @State private var conversation = RoomVideoConversation()
+    @State private var speaker = RoomSpokenReply()
+    @State private var talkReplies: [TalkReply] = []
+    @State private var talkItem: AVPlayerItem?
+    @FocusState private var talkFocus: TalkFocus?
     @State private var task: Task<Void, Never>?
     @State private var requestID = UUID()
     @State private var progress: String?
@@ -62,20 +78,86 @@ struct RoomAskView: View {
     @State private var appendFlow: AssistFlow?
     @State private var findings: RoomWebFindings?
 
-    init(video: ChannelVideo? = nil, initialPrompt: String = "", inSidebar: Bool = false) {
+    init(video: ChannelVideo? = nil, initialPrompt: String = "", inSidebar: Bool = false, startsTalking: Bool = false) {
         self.inSidebar = inSidebar
         self.video = video
         _prompt = State(initialValue: initialPrompt)
+        _isTalking = State(initialValue: startsTalking && video != nil)
     }
 
-    var body: some View {
+    private enum TalkFocus: Hashable { case prompt, send, audio }
+
+    private var talkComposer: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Open the question field to type or dictate. Hold the Siri Remote microphone button while you speak, then release. Choose Done, review your question, and select Send to hear the reply.")
+                .font(.callout).foregroundStyle(.secondary)
+            TextField(talkReplies.isEmpty ? "Ask a question about this video" : "Ask a follow-up", text: $prompt)
+                .focused($talkFocus, equals: .prompt)
+                .submitLabel(.done)
+                .onSubmit { if !trimmed.isEmpty && helper.isReady { talkFocus = .send } }
+                .accessibilityIdentifier("video-talk-prompt")
+                .onAppear { talkFocus = .prompt }
+
+            HStack(spacing: 20) {
+                Button("Send") { begin(.talk) }
+                    .focused($talkFocus, equals: .send)
+                    .disabled(trimmed.isEmpty || !helper.isReady || progress != nil)
+                    .accessibilityIdentifier("video-talk-send")
+                if !talkReplies.isEmpty {
+                    Button(action: toggleReading) {
+                        Label(speaker.isSpeaking ? "Stop reading" : "Read again",
+                              systemImage: speaker.isSpeaking ? "stop.fill" : "speaker.wave.2")
+                    }
+                    .focused($talkFocus, equals: .audio)
+                    .disabled(progress != nil)
+                    .accessibilityIdentifier(speaker.isSpeaking ? "video-talk-stop" : "video-talk-replay")
+                }
+            }
+        }
+        .onChange(of: talkFocus) { _, focus in
+            if focus == .prompt { speaker.stop() }
+        }
+    }
+
+    @ViewBuilder private var talkHistory: some View {
+        ForEach(talkReplies.reversed()) { exchange in
+            VStack(alignment: .leading, spacing: 14) {
+                Text(verbatim: exchange.question).font(.title3.bold())
+                ForEach(exchange.points) { point in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(verbatim: point.text).font(.headline)
+                        Text("\(point.cue.start.roomTimestamp)  “\(point.cue.text)”")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("video-talk-citation")
+                    .focusable()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var helperSettings: some View {
+        Label(helper.statusText, systemImage: helper.isReady ? "checkmark.circle" : "laptopcomputer")
+            .font(.headline)
+        Button(helper.isReady ? "Helper settings" : "Connect or check helper") {
+            if isTalking { cancel(); speaker.stop() }
+            showPairing = true
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 if !inSidebar {
                     HStack {
-                        Text("Ask AI").font(.largeTitle.bold())
+                        Text(isTalking ? "Talk about this video" : "Ask AI").font(.largeTitle.bold())
                         Spacer()
-                        Button("Done") { dismiss() }
+                        if isTalking {
+                            Button("Video tools") { switchTalkMode(false) }
+                                .accessibilityIdentifier("video-talk-tools")
+                        }
+                        Button("Done") { close() }
                     }
                 }
                 if let video { Text(video.title).font(.title3).lineLimit(2) }
@@ -91,12 +173,18 @@ struct RoomAskView: View {
                     if inSidebar, let current = viewing.video {
                         Button { clearRequest(); askingAbout = current } label: {
                             VStack(alignment: .leading, spacing: 6) {
-                                Label("Ask about the current video", systemImage: "play.rectangle")
+                                Label("Talk about this video", systemImage: "mic")
                                 Text(current.title).font(.caption).lineLimit(1)
                             }
-                        }
+                        }.accessibilityIdentifier("video-talk-start")
                     }
+                } else if isTalking {
+                    talkComposer
                 } else {
+                    Button { switchTalkMode(true) } label: {
+                        Label("Talk about this video", systemImage: "mic")
+                    }
+                    .accessibilityIdentifier("video-talk-start")
                     TextField("Ask about this video’s captions", text: $prompt)
                         .onSubmit { begin(.captionQuestion) }
                     HStack(spacing: 18) {
@@ -107,11 +195,13 @@ struct RoomAskView: View {
                     }
                     .disabled(!helper.isReady || progress != nil)
                 }
-                Label(helper.statusText, systemImage: helper.isReady ? "checkmark.circle" : "laptopcomputer")
-                    .font(.headline)
-                Button(helper.isReady ? "Helper settings" : "Connect or check helper") { showPairing = true }
+                if !isTalking || !helper.isReady { helperSettings }
                 if let progress {
-                    HStack { ProgressView(); Text(progress); Button("Cancel") { cancel() } }
+                    HStack {
+                        ProgressView()
+                        Text(progress)
+                        Button("Cancel") { cancel() }.accessibilityIdentifier("assistant-cancel")
+                    }
                 }
                 if let notice { Text(notice).foregroundStyle(.secondary) }
                 if let captionAction, let video {
@@ -120,10 +210,14 @@ struct RoomAskView: View {
                         Text("If you have permission to use this track with Ask AI, the paired helper can check YouTube or use a transcript you paste with timestamps.")
                             .font(.caption).foregroundStyle(.secondary)
                         Button("Use public captions") { begin(captionAction, permitted: true) }
+                            .disabled(!helper.isReady)
+                            .accessibilityIdentifier("video-public-captions")
                         TextField("Paste timestamped transcript", text: $transcript)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .accessibilityIdentifier("video-pasted-transcript")
                         Button("Use pasted transcript") { begin(captionAction, permitted: true, supplied: transcript) }
-                            .disabled(transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .disabled(!helper.isReady || transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityIdentifier("video-use-transcript")
                         Text("On your Mac you can also import a caption file for video " + video.id + " and try again.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -162,21 +256,53 @@ struct RoomAskView: View {
                 }
                 if video != nil && (offerSearch || !helper.isReady) {
                     Button("Search related videos") { begin(.related) }.disabled(progress != nil)
+                        .accessibilityIdentifier("video-related-search")
                 }
+                if isTalking { talkHistory }
+                if isTalking && helper.isReady { helperSettings }
             }
             .frame(minWidth: inSidebar ? nil : 1430, maxWidth: 1430, alignment: .leading).padding(inSidebar ? 16 : 48)
         }
+    }
+
+    var body: some View {
+        content
         .scrollClipDisabled()
+        .onPlayPauseCommand(perform: isTalking ? { toggleReading() } : nil)
         .accessibilityIdentifier("ask-ai")
-        .onAppear { helper.start() }
-        .onDisappear { if progress != nil { clearRequest() } }
+        .onAppear {
+            helper.start()
+            if isTalking { startTalking() }
+        }
+        .onDisappear {
+            if progress != nil { clearRequest() }
+            if !showPairing {
+                endConversation(resume: scenePhase == .active && viewing.video?.id == video?.id)
+            }
+        }
         .onChange(of: prompt) { _, _ in
             if activeQuestion != trimmed { clearRequest() }
         }
         .onChange(of: viewing.video?.id) { _, current in
-            if let video, current != video.id { cancel(); dismiss() }
+            if let video, current != video.id { close(resume: false) }
         }
-        .sheet(item: $askingAbout) { current in RoomAskView(video: current) }
+        .onReceive(viewing.playback.player.publisher(for: \.currentItem, options: [.new]).receive(on: RunLoop.main)) { item in
+            if isTalking, item === viewing.playback.player.currentItem, item !== talkItem { close(resume: false) }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard isTalking else { return }
+            if phase == .background {
+                cancel()
+                speaker.end(resume: false)
+            } else if phase == .active {
+                guard viewing.video?.id == video?.id, viewing.playback.player.currentItem === talkItem else {
+                    close(resume: false)
+                    return
+                }
+                speaker.begin(with: viewing.playback.player)
+            }
+        }
+        .sheet(item: $askingAbout) { current in RoomAskView(video: current, startsTalking: true) }
         .sheet(isPresented: $showPairing) { RoomPairingView(helper: helper) }
         .sheet(item: $editing) { draft in
             if let original = draft.original {
@@ -228,7 +354,46 @@ struct RoomAskView: View {
     }
 
     private var trimmed: String { prompt.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private enum Action { case assist, planResearch, find, playlist, summary, captionQuestion, jump, followup, related }
+    private enum Action { case assist, planResearch, find, playlist, summary, captionQuestion, talk, jump, followup, related }
+
+    private func startTalking() {
+        if talkItem !== viewing.playback.player.currentItem {
+            conversation.reset()
+            talkReplies.removeAll()
+        }
+        talkItem = viewing.playback.player.currentItem
+        speaker.begin(with: viewing.playback.player)
+    }
+
+    private func toggleReading() {
+        if speaker.isSpeaking {
+            speaker.stop()
+            return
+        }
+        guard let last = talkReplies.last, progress == nil, scenePhase == .active,
+              viewing.video?.id == video?.id, viewing.playback.player.currentItem === talkItem else { return }
+        speaker.speak(last.spokenText)
+    }
+
+    private func switchTalkMode(_ enabled: Bool) {
+        clearRequest()
+        prompt = ""
+        isTalking = enabled
+        if enabled { startTalking() }
+        else { speaker.end() }
+    }
+
+    private func endConversation(resume: Bool) {
+        speaker.end(resume: resume)
+        conversation.reset()
+        talkReplies.removeAll()
+    }
+
+    private func close(resume: Bool = true) {
+        cancel()
+        endConversation(resume: resume && scenePhase == .active && viewing.video?.id == video?.id)
+        dismiss()
+    }
 
     private func cancel() {
         requestID = UUID()
@@ -239,6 +404,7 @@ struct RoomAskView: View {
 
     private func clearRequest() {
         cancel()
+        if isTalking { speaker.stop() }
         activeQuestion = nil
         notice = nil
         answers = []
@@ -288,7 +454,7 @@ struct RoomAskView: View {
                 let result = try await RoomAskCatalog.search(term, account: account, relatedTo: video)
                 try check(id, item: item)
                 suggestions = Array(result.videos.prefix(8))
-            case .summary, .captionQuestion, .jump:
+            case .summary, .captionQuestion, .talk, .jump:
                 do {
                     try await analyzeCaptions(action, question: question, id: id, item: item, permitted: permitted, supplied: supplied)
                 } catch {
@@ -457,6 +623,10 @@ struct RoomAskView: View {
         let duration = rawDuration.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         let track = try RoomAIValidation.validTrack(received, duration: duration)
         guard !track.isEmpty else {
+            if action == .talk {
+                conversation.reset()
+                talkReplies.removeAll()
+            }
             captionAction = action
             notice = permitted ? "YouTube didn’t supply a readable timestamped track. Paste a transcript or search related videos." :
                 "Your paired helper has no captions for this video yet."
@@ -464,6 +634,29 @@ struct RoomAskView: View {
             return
         }
         transcript = ""
+        if action == .talk {
+            let request: AIRequest
+            do {
+                defer { talkReplies = Array(talkReplies.prefix(conversation.exchanges.count)) }
+                request = try conversation.prepare(videoID: video.id, question: question, track: track)
+            }
+            progress = "Reading the captions for your question…"
+            let proposal = try await helper.ask(request)
+            try check(id, item: item)
+            guard isTalking, item === talkItem, scenePhase != .background else { throw CancellationError() }
+            let points = try conversation.append(proposal, for: request)
+            let exchange = TalkReply(question: question, points: points.map { CitedAnswer(text: $0.0, cue: $0.1) })
+            talkReplies.append(exchange)
+            talkReplies = Array(talkReplies.suffix(conversation.exchanges.count))
+            activeQuestion = ""
+            prompt = ""
+            if request.cues.count < track.count {
+                notice = "This answer uses \(request.cues.count) excerpts from \(track.count) permitted caption cues."
+            }
+            if scenePhase == .active { speaker.speak(exchange.spokenText) }
+            talkFocus = .audio
+            return
+        }
         let cues = RoomAIValidation.excerpts(track, question: question, forJump: action != .summary)
         progress = "Checking \(cues.count) caption cues…"
         let result = try await helper.ask(AIRequest(kind: action == .jump ? .jump : .summary,

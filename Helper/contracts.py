@@ -8,7 +8,7 @@ from container.runner import public_source
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 MAX_BODY = 192 * 1024
 PLAYLIST_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
-KINDS = ("assist", "research", "query", "playlist", "summary", "jump", "followup")
+KINDS = ("assist", "research", "query", "playlist", "summary", "jump", "followup", "conversation")
 
 
 class Problem(Exception):
@@ -56,7 +56,11 @@ def valid_request(data):
             ids.add(identifier.lower())
             string(item["title"], 256)
         return {"candidates": [], "cues": [], **data}
-    fields(data, ("kind", "prompt", "candidates", "cues"), ("videoID",))
+    required = ("kind", "prompt", "candidates", "cues")
+    if kind == "conversation":
+        fields(data, (*required, "videoID", "turns"))
+    else:
+        fields(data, required, ("videoID",))
     require(kind in KINDS, "Unknown request kind.")
     string(data["prompt"], 2000)
     if "videoID" in data:
@@ -92,6 +96,18 @@ def valid_request(data):
         require((not candidates) if kind == "query" else bool(candidates), "Invalid search candidates.")
     elif kind == "followup":
         require("videoID" in data and bool(candidates), "Follow-up discovery requires a current video and candidates.")
+    elif kind == "conversation":
+        require(not candidates and cues, "Video conversations require approved captions for the current video.")
+        turns = data["turns"]
+        require(type(turns) is list and len(turns) <= 3, "Supply at most three previous exchanges.")
+        for turn in turns:
+            fields(turn, ("question", "answer", "cueIndices"))
+            string(turn["question"], 2000)
+            string(turn["answer"], 1600)
+            cited = turn["cueIndices"]
+            require(type(cited) is list and 1 <= len(cited) <= 3 and
+                    all(type(i) is int and i in indexes for i in cited) and len(set(cited)) == len(cited),
+                    "Each exchange needs one to three distinct citations from the supplied cues.")
     else:
         require("videoID" in data and bool(cues), "This action requires the video's timed captions.")
         require(ids <= {data["videoID"]}, "Only the current video's metadata is allowed.")
@@ -165,10 +181,11 @@ def valid_answer(data, answer):
                 check_cue(data, answer["cueIndex"])
         else:
             fields(answer, ("points",))
-            require(type(answer["points"]) is list and len(answer["points"]) <= 12, "Invalid points.")
+            max_points, max_point_bytes = (3, 500) if kind == "conversation" else (12, 1500)
+            require(type(answer["points"]) is list and len(answer["points"]) <= max_points, "Invalid points.")
             for point in answer["points"]:
                 fields(point, ("text", "cueIndex"))
-                string(point["text"], 1500)
+                string(point["text"], max_point_bytes)
                 check_cue(data, point["cueIndex"])
     except (Problem, UnicodeError):
         raise Problem(502, "invalid_answer", "The assistant returned an answer outside the supplied evidence.")

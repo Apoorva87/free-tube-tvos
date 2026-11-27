@@ -38,6 +38,10 @@ python3 Helper/helper.py import-captions dQw4w9WgXcQ ./captions.vtt --permitted
 
 Importing replaces that video’s track. Imported cues retain their video ID, start and end times, and cue indices. The TV obtains the selected track over the paired connection. The laptop checks each excerpt against its current imported track, including the exact text and times, before sending the requested cues to Codex.
 
+In a video conversation, ask a question such as “What does the speaker recommend first?” and follow up with “Why that step?” Each question starts a fresh Codex turn. The TV includes up to three earlier exchanges to clarify references such as “that step.” The helper checks their cue indices against the current excerpt and instructs Codex to ground each new statement in those captions. A reply contains up to three short statements with cue references, or an empty list when the captions do not answer the question. The helper keeps no chat transcript on disk.
+
+When updating an existing helper for video conversations, rebuild the image with the setup command above and restart the Python helper to load its updated request validator. Your existing pairing and dedicated sign-in carry over.
+
 ## Status and data
 
 - **Ready** means the isolated CLI reports a ChatGPT subscription and the service confirms ordinary included usage is available. Each ask checks again before starting the turn. The helper selects a single model, uses standard speed, and stops on a quota or provider error. Account-level usage and charges remain subject to the provider’s plan and spending settings. [Codex authentication](https://developers.openai.com/codex/auth/)

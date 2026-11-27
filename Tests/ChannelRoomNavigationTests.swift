@@ -44,24 +44,10 @@ final class ChannelRoomNavigationTests: XCTestCase {
 
     func testBackStopsPlaybackAndHistorySurvivesRelaunch() async throws {
         continueAfterFailure = false
-        let app = XCUIApplication()
-        let id = UUID()
-        let videoID = "aqz-KE-bpKQ"
-        let video: [String: Any] = ["id": videoID, "title": "Big Buck Bunny", "channelID": "UCSMOQeBJ2RAnuFungnQOxLg",
-                                    "channelTitle": "Blender", "publishedAt": Date()]
-        let archive: [String: Any] = ["version": 1, "playlists": [
-            ["id": id.uuidString, "title": "Playback test", "videos": [video]]
-        ]]
-        let data = try PropertyListSerialization.data(fromPropertyList: archive, format: .binary, options: 0)
-        app.launchArguments = ["-room.playlists.v1", "<" + data.map { String(format: "%02x", $0) }.joined() + ">"]
-        app.launch()
+        let app = try playSampleMovie()
         let remote = XCUIRemote.shared
-        remote.press(.menu)
-        selectWithRemote(app.buttons["nav-playlists"], in: app)
-        selectWithRemote(app.descendants(matching: .any)["playlist-" + id.uuidString], in: app)
-        selectWithRemote(app.buttons["Play all"], in: app)
+        let videoID = "aqz-KE-bpKQ"
         let player = app.descendants(matching: .any)["native-playback"]
-        XCTAssertTrue(player.waitForExistence(timeout: 30), "Requires a playable public stream for Big Buck Bunny.")
         try await Task.sleep(for: .seconds(3))
         remote.press(.menu)
         if !player.waitForNonExistence(timeout: 2) { remote.press(.menu) }
@@ -92,6 +78,50 @@ final class ChannelRoomNavigationTests: XCTestCase {
         XCTAssertTrue(elapsed.waitForExistence(timeout: 4))
         let seconds = elapsed.label.split(separator: ":").compactMap { Int($0) }.reduce(0) { $0 * 60 + $1 }
         XCTAssertGreaterThanOrEqual(seconds, 4, "The video should keep playing while minimized.")
+    }
+
+    func testVideoTalkUsesTheRemoteTextField() throws {
+        continueAfterFailure = false
+        let app = try playSampleMovie()
+        selectTransportAction("Ask AI", in: app)
+        let field = app.textFields["video-talk-prompt"]
+        XCTAssertTrue(field.waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["video-talk-send"].isEnabled)
+        selectWithRemote(field, in: app)
+        app.typeText("What is happening in this video?\n")
+        if app.keyboards.firstMatch.exists { XCUIRemote.shared.press(.menu) }
+        XCTAssertTrue(field.value as? String == "What is happening in this video?")
+        XCTAssertTrue(app.buttons["video-talk-tools"].exists)
+    }
+
+    func testPairedVideoTalkReadsTwoCitedReplies() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["FREETUBE_LIVE_TALK_TEST"] == "1",
+                          "Requires a paired test helper with permitted captions for the sample movie.")
+        continueAfterFailure = false
+        let app = try playSampleMovie()
+        selectTransportAction("Ask AI", in: app)
+        let field = app.textFields["video-talk-prompt"]
+        XCTAssertTrue(field.waitForExistence(timeout: 8))
+        let send = app.buttons["video-talk-send"]
+        let stop = app.buttons["video-talk-stop"]
+        let replay = app.buttons["video-talk-replay"]
+        for question in ["What signal marks the crossing?", "What does it tell the crew?"] {
+            selectWithRemote(field, in: app)
+            app.typeText(question + "\n")
+            if app.keyboards.firstMatch.exists { XCUIRemote.shared.press(.menu) }
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 25), .completed)
+            selectWithRemote(send, in: app)
+            XCTAssertTrue(stop.waitForExistence(timeout: 160), "The validated answer should automatically start reading.")
+            XCTAssertTrue(app.staticTexts[question].exists)
+            XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "video-talk-citation").count > 0)
+            XCTAssertTrue(replay.waitForExistence(timeout: 90), "The system speech synthesizer should finish the answer.")
+        }
+        XCTAssertTrue(app.staticTexts["What signal marks the crossing?"].exists)
+        selectWithRemote(replay, in: app)
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        selectWithRemote(stop, in: app)
+        XCTAssertTrue(replay.waitForExistence(timeout: 5))
     }
 
     func testPlaylistThumbnailTilesNavigateAndReorderWithRemote() throws {
@@ -420,6 +450,28 @@ final class ChannelRoomNavigationTests: XCTestCase {
         }
         XCTAssertTrue(youtube.wait(for: .runningForeground, timeout: 10))
         capture("ChannelRoom actual handoff")
+    }
+
+    private func playSampleMovie() throws -> XCUIApplication {
+        let app = XCUIApplication()
+        let id = UUID()
+        let videoID = "aqz-KE-bpKQ"
+        let video: [String: Any] = ["id": videoID, "title": "Big Buck Bunny", "channelID": "UCSMOQeBJ2RAnuFungnQOxLg",
+                                    "channelTitle": "Blender", "publishedAt": Date()]
+        let archive: [String: Any] = ["version": 1, "playlists": [
+            ["id": id.uuidString, "title": "Playback test", "videos": [video]]
+        ]]
+        let data = try PropertyListSerialization.data(fromPropertyList: archive, format: .binary, options: 0)
+        app.launchArguments = ["-room.playlists.v1", "<" + data.map { String(format: "%02x", $0) }.joined() + ">"]
+        app.launch()
+        let remote = XCUIRemote.shared
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-playlists"], in: app)
+        selectWithRemote(app.descendants(matching: .any)["playlist-" + id.uuidString], in: app)
+        selectWithRemote(app.buttons["Play all"], in: app)
+        let player = app.descendants(matching: .any)["native-playback"]
+        XCTAssertTrue(player.waitForExistence(timeout: 30), "Requires a playable public stream for Big Buck Bunny.")
+        return app
     }
 
     private func playFeaturedMovie() throws -> XCUIApplication {
