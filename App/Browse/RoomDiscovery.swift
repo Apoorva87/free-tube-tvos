@@ -1,6 +1,12 @@
 import Foundation
 import CryptoKit
 
+struct RoomDiscoverShelf: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let videos: [ChannelVideo]
+}
+
 struct RoomTopicShelf: Identifiable {
     let id: String
     let videos: [ChannelVideo]
@@ -18,6 +24,20 @@ struct RoomDiscoveryCache {
 
         func isFresh(at now: Date) -> Bool {
             (0..<(6 * 3600)).contains(now.timeIntervalSince(date))
+        }
+    }
+
+    struct Related: Codable {
+        var likedIDs: [String] = []
+        var likesUpdated: Date?
+        var pages = [String: Page]()
+
+        mutating func expire(at now: Date) {
+            pages = pages.filter { $0.value.isFresh(at: now) }
+            if let likesUpdated, !(0..<(6 * 3600)).contains(now.timeIntervalSince(likesUpdated)) {
+                likedIDs = []
+                self.likesUpdated = nil
+            }
         }
     }
 
@@ -64,6 +84,19 @@ struct RoomDiscoveryCache {
         return snapshot
     }
 
+    func readRelated(_ scope: Scope?, now: Date) -> Related {
+        guard let scope, let data = try? Data(contentsOf: directory.appending(path: "related-" + scope.filename)),
+              var result = try? JSONDecoder().decode(Related.self, from: data) else { return Related() }
+        result.expire(at: now)
+        return result
+    }
+
+    func writeRelated(_ related: Related, for scope: Scope?) {
+        guard let scope, let data = try? JSONEncoder().encode(related) else { return }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? data.write(to: directory.appending(path: "related-" + scope.filename), options: .atomic)
+    }
+
     func write(_ snapshot: Snapshot, for scope: Scope?) {
         guard let scope, !snapshot.pages.isEmpty, let data = try? JSONEncoder().encode(snapshot) else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -72,6 +105,66 @@ struct RoomDiscoveryCache {
 }
 
 enum RoomDiscovery {
+    // The shared uploads feed is already deduplicated and sorted by publication date.
+    static func channelShelves(chronological uploads: [ChannelVideo], channels: [RoomChannel]) -> [RoomDiscoverShelf] {
+        let byChannel = Dictionary(grouping: uploads, by: \.channelID)
+        return channels.compactMap { channel -> RoomDiscoverShelf? in
+            guard let videos = byChannel[channel.id] else { return nil }
+            return RoomDiscoverShelf(id: "channel-" + channel.id, title: channel.title, videos: Array(videos.prefix(10)))
+        }.sorted {
+            let lhs = $0.videos[0].publishedAt, rhs = $1.videos[0].publishedAt
+            return lhs == rhs ? $0.id < $1.id : lhs > rhs
+        }
+    }
+
+    static func discoverShelves(channelShelves: [RoomDiscoverShelf], related: RoomDiscoveryCache.Related,
+                               follows: Set<String>, watched: Set<String>, topicPicks: [ChannelVideo],
+                               creatorPicks: [ChannelVideo]) -> [RoomDiscoverShelf] {
+        var shown = watched.union(related.likedIDs)
+        for row in channelShelves { shown.formUnion(row.videos.map(\.id)) }
+
+        func collect(_ pages: [[ChannelVideo]]) -> [ChannelVideo] {
+            var videos = [ChannelVideo]()
+            for rank in 0..<(pages.map(\.count).max() ?? 0) {
+                for page in pages where rank < page.count {
+                    let video = page[rank]
+                    guard !follows.contains(video.channelID), shown.insert(video.id).inserted else { continue }
+                    videos.append(video)
+                    if videos.count == 20 { return videos }
+                }
+            }
+            return videos
+        }
+
+        let likedPages = related.likedIDs.prefix(5).compactMap { related.pages[$0]?.videos }
+        let uploadPages = channelShelves.prefix(6).compactMap { $0.videos.first }.compactMap { related.pages[$0.id]?.videos }
+        var forYou = collect(likedPages)
+        var fromSubscriptions = collect(uploadPages)
+        // Reserve the seed-based recommendations before filling a missing shelf from topic searches.
+        if forYou.isEmpty { forYou = collect([topicPicks]) }
+        if fromSubscriptions.isEmpty { fromSubscriptions = collect([creatorPicks]) }
+        if forYou.isEmpty, fromSubscriptions.count > 1 {
+            let split = (fromSubscriptions.count + 1) / 2
+            forYou = Array(fromSubscriptions.prefix(split))
+            fromSubscriptions.removeFirst(split)
+        }
+        if fromSubscriptions.isEmpty, forYou.count > 1 {
+            // A recent like can also be the newest upload. Keep both perspectives when their pages overlap.
+            let eligible = Set((uploadPages.flatMap { $0 } + creatorPicks).map(\.id))
+            fromSubscriptions = Array(forYou.filter { eligible.contains($0.id) }.suffix(forYou.count / 2))
+            let moved = Set(fromSubscriptions.map(\.id))
+            forYou.removeAll { moved.contains($0.id) }
+        }
+        var shelves = [RoomDiscoverShelf]()
+        if !forYou.isEmpty {
+            shelves.append(RoomDiscoverShelf(id: "for-you", title: "Recommended for you", videos: forYou))
+        }
+        if !fromSubscriptions.isEmpty {
+            shelves.append(RoomDiscoverShelf(id: "from-subscriptions", title: "More like your subscriptions", videos: fromSubscriptions))
+        }
+        return shelves + channelShelves
+    }
+
     static func topicName(_ url: String) -> String? {
         guard let path = URL(string: url)?.lastPathComponent.removingPercentEncoding else { return nil }
         let text = path.replacingOccurrences(of: "_", with: " ")

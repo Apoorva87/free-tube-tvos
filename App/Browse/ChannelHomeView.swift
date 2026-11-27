@@ -1,12 +1,13 @@
 import SwiftUI
 
 enum RoomSection: String, CaseIterable {
-    case home = "Home", channels = "Channels", search = "Search", playlists = "Playlists", history = "History", assistant = "Ask AI"
-    static let sidebarOrder: [Self] = [.home, .channels, .playlists, .history, .search, .assistant]
+    case discover = "Discover", home = "Home", channels = "Channels", search = "Search", playlists = "Playlists", history = "History", assistant = "Ask AI"
+    static let sidebarOrder: [Self] = [.discover, .home, .channels, .playlists, .history, .search, .assistant]
     var title: String { self == .channels ? "Subscriptions" : rawValue }
     var navigationID: String { self == .assistant ? "assistant" : rawValue.lowercased() }
     var icon: String {
         switch self {
+        case .discover: "safari.fill"
         case .home: "house.fill"
         case .channels: "rectangle.stack.fill"
         case .search: "magnifyingglass"
@@ -19,6 +20,12 @@ enum RoomSection: String, CaseIterable {
 
 enum RoomBrowseFocus: Hashable {
     case menu, featured, newPlaylist, assistantPrompt, historyBrowse, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
+    case discoverCategory(RoomDiscoverCategory), discoverRefresh, discoverFind, discoverSignIn
+    case shelfVideo(shelf: String, video: String)
+
+    static func video(_ id: String, in shelf: String?) -> Self {
+        shelf.map { .shelfVideo(shelf: $0, video: id) } ?? .video(id)
+    }
 }
 
 private struct RoomFocusKey: EnvironmentKey {
@@ -54,7 +61,10 @@ private struct RoomShell: View {
     let onPlay: (ChannelVideo, [ChannelVideo]) -> Void
     @State private var library = ChannelLibrary()
     @State private var history = RoomWatchHistoryStore()
-    @State private var section = RoomSection.home
+    @State private var section = RoomSection.discover
+    @State private var chosenCategory: RoomDiscoverCategory?
+    @State private var categoryCatalog = RoomCategoryCatalog()
+    @State private var categoryReload: UUID?
     @Binding var accountOpen: Bool
     @Binding var startsProfileSwitch: Bool
     @State private var channel: RoomChannel?
@@ -66,11 +76,15 @@ private struct RoomShell: View {
     @State private var savingVideo: ChannelVideo?
     @FocusState private var focus: RoomBrowseFocus?
 
+    private var discoverCategory: RoomDiscoverCategory {
+        chosenCategory ?? (account.isSignedIn || !library.followed.isEmpty ? .forYou : .explore)
+    }
+
     var body: some View {
         NavigationStack {
             ZStack(alignment: .leading) {
                 VStack(alignment: .leading, spacing: 20) {
-                    if section != .home {
+                    if section != .home && section != .discover {
                         HStack(spacing: 20) {
                             if section == .search {
                                 Button { menuOpen = true } label: { Image(systemName: "sidebar.left") }
@@ -83,6 +97,12 @@ private struct RoomShell: View {
                     }
                     Group {
                         switch section {
+                        case .discover:
+                            RoomDiscoverView(library: library, catalog: categoryCatalog, category: discoverCategory,
+                                             reloadID: categoryReload, signedIn: account.isSignedIn, focus: $focus,
+                                             select: { chosenCategory = $0; categoryReload = nil },
+                                             refresh: refreshDiscover, openMenu: { menuOpen = true }, play: onPlay,
+                                             findChannels: { choose(.search) }, signIn: { accountOpen = true })
                         case .home: home
                         case .channels:
                             RoomSubscriptionsView(library: library, focus: $focus, play: play, openChannel: { channel = $0 },
@@ -110,18 +130,10 @@ private struct RoomShell: View {
             }
             .environment(\.roomBrowseFocus, $focus)
             .environment(\.roomVideoFacts, library.videoFacts)
-            .defaultFocus($focus, .featured)
+            .defaultFocus($focus, firstFocus(in: section))
             .onChange(of: viewing.presentation) { previous, current in
                 if previous == .full, current != .full, !menuOpen {
-                    let first: RoomBrowseFocus = switch section {
-                    case .home: .featured
-                    case .channels: .subscriptionFilter(nil)
-                    case .playlists: .newPlaylist
-                    case .history: history.firstFocus
-                    case .assistant: .assistantPrompt
-                    case .search: .menu
-                    }
-                    closeMenu(to: lastTile ?? first)
+                    closeMenu(to: returningFocus(in: section))
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -169,6 +181,9 @@ private struct RoomShell: View {
                 history?.record(video)
             }
         }
+        .onChange(of: history.videos, initial: true) {
+            library.setDiscoverHistory(history.videos)
+        }
     }
 
     private var drawer: some View {
@@ -199,15 +214,20 @@ private struct RoomShell: View {
                 .buttonStyle(RailButtonStyle(selected: false)).accessibilityIdentifier("drawer-mini-expand")
                 Button {
                     viewing.close()
-                    closeMenu(to: lastTile ?? .menu)
+                    closeMenu(to: returningFocus(in: section))
                 } label: { Label("Close video", systemImage: "xmark") }
                 .buttonStyle(RailButtonStyle(selected: false)).accessibilityIdentifier("drawer-mini-close")
             }
             Divider().overlay(RoomPalette.muted.opacity(0.4)).padding(.vertical, 14)
             Button {
-                refresh = UUID()
-                choose(.home)
-            } label: { Label("Refresh Home", systemImage: "arrow.clockwise") }
+                if section == .discover {
+                    refreshDiscover()
+                    closeMenu(to: .discoverCategory(discoverCategory))
+                } else {
+                    refresh = UUID()
+                    choose(.home)
+                }
+            } label: { Label(section == .discover ? "Refresh Discover" : "Refresh Home", systemImage: "arrow.clockwise") }
             .buttonStyle(RailButtonStyle(selected: false))
             Spacer()
         }
@@ -225,18 +245,38 @@ private struct RoomShell: View {
     }
 
     private func choose(_ item: RoomSection) {
-        let retained = item == section ? lastTile : nil
-        if item != section { lastTile = nil }
+        if item != section {
+            lastTile = nil
+            categoryReload = nil
+        }
         section = item
-        let first: RoomBrowseFocus? = switch item {
-        case .home: library.videos.isEmpty ? nil : .featured
+        closeMenu(to: returningFocus(in: item))
+    }
+
+    private func firstFocus(in item: RoomSection) -> RoomBrowseFocus {
+        switch item {
+        case .discover: .discoverCategory(discoverCategory)
+        case .home: library.videos.isEmpty ? .menu : .featured
         case .channels: .subscriptionFilter(nil)
         case .playlists: .newPlaylist
         case .history: history.firstFocus
         case .assistant: .assistantPrompt
-        case .search: nil
+        case .search: .menu
         }
-        closeMenu(to: retained ?? first ?? .menu)
+    }
+
+    private func returningFocus(in item: RoomSection) -> RoomBrowseFocus {
+        guard let lastTile else { return firstFocus(in: item) }
+        if item == .discover, case .shelfVideo = lastTile {
+            let rows = discoverCategory == .forYou ? library.discoverShelves : categoryCatalog.shelves
+            return RoomDiscoverView.availableFocus(lastTile, category: discoverCategory, rows: rows)
+        }
+        return lastTile
+    }
+
+    private func refreshDiscover() {
+        if discoverCategory == .forYou { refresh = UUID() }
+        else { categoryReload = UUID() }
     }
 
     private func closeMenu(to target: RoomBrowseFocus) {
@@ -315,7 +355,9 @@ private struct RoomBrowseRail: View {
         }
         .onChange(of: focus.wrappedValue) { _, target in
             switch target {
-            case .featured, .newPlaylist, .historyBrowse, .video, .channel, .subscriptionFilter: lastTile = target
+            case .featured, .newPlaylist, .historyBrowse, .video, .channel, .subscriptionFilter,
+                 .discoverCategory, .discoverRefresh, .discoverFind, .discoverSignIn, .shelfVideo:
+                lastTile = target
             default: break
             }
         }
@@ -323,6 +365,7 @@ private struct RoomBrowseRail: View {
 
     private var tileFocused: Bool {
         if case .video = focus.wrappedValue { return true }
+        if case .shelfVideo = focus.wrappedValue { return true }
         if case .channel = focus.wrappedValue { return true }
         return false
     }

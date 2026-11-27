@@ -9,11 +9,13 @@ struct ChannelVideo: Identifiable, Hashable, Codable, Sendable {
     var publishedAt: Date = .distantPast
     var coverThumbnail: URL?
     var durationSeconds: Int? = nil
+    var uploadPosition: Int? = nil
 
     static func chronological(_ videos: [Self], followed: Set<String>) -> [Self] {
         var seen = Set<String>()
         return videos.filter { followed.contains($0.channelID) }.sorted {
-            $0.publishedAt == $1.publishedAt ? $0.id < $1.id : $0.publishedAt > $1.publishedAt
+            if $0.publishedAt != $1.publishedAt { return $0.publishedAt > $1.publishedAt }
+            return ($0.uploadPosition ?? .max, $0.id) < ($1.uploadPosition ?? .max, $1.id)
         }.filter { seen.insert($0.id).inserted }
     }
 }
@@ -210,8 +212,21 @@ struct ChannelCatalog: Sendable {
     func publicFeed(_ id: String) async throws -> (RoomChannel, CatalogPage) {
         guard ChannelAddress.isID(id) else { throw CatalogError.channelMissing }
         let url = URL(string: "https://www.youtube.com/feeds/videos.xml?channel_id=\(id)")!
-        let bytes = try await data(URLRequest(url: url))
-        return try ChannelAtom.read(bytes, id: id)
+        var emptyFeed: (RoomChannel, CatalogPage)?
+        do {
+            let feed = try ChannelAtom.read(await data(URLRequest(url: url)), id: id)
+            if !feed.1.videos.isEmpty { return feed }
+            emptyFeed = feed
+        } catch { try Task.checkCancellation() }
+        var request = URLRequest(url: URL(string: "https://www.youtube.com/channel/\(id)/videos?app=desktop&hl=en")!)
+        request.setValue("FreeTube/0.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html", forHTTPHeaderField: "Accept")
+        do { return try Self.publicUploads(from: await data(request), channelID: id) }
+        catch {
+            try Task.checkCancellation()
+            if let emptyFeed { return emptyFeed }
+            throw error
+        }
     }
 
     func uploads(_ channel: RoomChannel, token: String?, page: String? = nil, count: Int = 30) async throws -> CatalogPage {
@@ -221,8 +236,12 @@ struct ChannelCatalog: Sendable {
             result = try await list("playlistItems", ["part": "snippet,contentDetails,status", "playlistId": playlist,
                 "maxResults": String(count), "pageToken": page,
                 "fields": "nextPageToken,items(snippet(title,videoOwnerChannelId,thumbnails),contentDetails(videoId,videoPublishedAt),status/privacyStatus)"], token)
-        } catch CatalogError.playlistMissing {
-            guard page == nil else { return CatalogPage() }
+        } catch {
+            try Task.checkCancellation()
+            guard page == nil else {
+                if case CatalogError.playlistMissing = error { return CatalogPage() }
+                throw error
+            }
             do { return try await publicFeed(channel.id).1 }
             catch CatalogError.channelMissing { return CatalogPage() }
         }
@@ -253,6 +272,12 @@ struct ChannelCatalog: Sendable {
             }
         }
         return found
+    }
+
+    func likedIDs(token: String) async throws -> [String] {
+        let page = try await list("videos", ["part": "id", "myRating": "like", "maxResults": "50",
+                                             "fields": "items/id"], token)
+        return page.items.compactMap { $0.id?.raw }
     }
 
     func facts(for ids: [String], token: String) async throws -> [String: RoomVideoFacts] {
@@ -290,7 +315,12 @@ struct ChannelCatalog: Sendable {
 
     private typealias Object = [String: Any]
 
-    private static func publicContents(from data: Data) throws -> Object {
+    static func publicContents(from data: Data) throws -> [String: Any] {
+        guard let contents = try publicRoot(from: data)["contents"] as? Object else { throw CatalogError.unreadable }
+        return contents
+    }
+
+    static func publicRoot(from data: Data) throws -> [String: Any] {
         let html = String(decoding: data, as: UTF8.self)
         guard let start = html.range(of: #"var\s+ytInitialData\s*=\s*"#, options: .regularExpression)?.upperBound,
               let end = html.range(of: "</script>", options: .caseInsensitive, range: start..<html.endIndex)?.lowerBound
@@ -319,9 +349,8 @@ struct ChannelCatalog: Sendable {
             literal.append(UInt8(ascii: "\""))
             json = try JSONDecoder().decode(String.self, from: Data(literal))
         }
-        guard let root = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? Object,
-              let contents = root["contents"] as? Object else { throw CatalogError.unreadable }
-        return contents
+        guard let root = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? Object else { throw CatalogError.unreadable }
+        return root
     }
 
     static func publicResults(from data: Data) throws -> CatalogPage {
@@ -371,6 +400,15 @@ struct ChannelCatalog: Sendable {
         return page
     }
 
+    static func publicThumbnailBadges(_ thumbnail: [String: Any]?) -> [[String: Any]] {
+        let overlays = thumbnail?["overlays"] as? [Object] ?? []
+        return overlays.flatMap { overlay -> [Object] in
+            let bottom = overlay["thumbnailBottomOverlayViewModel"] as? Object
+            let badge = overlay["thumbnailOverlayBadgeViewModel"] as? Object
+            return (bottom?["badges"] ?? badge?["thumbnailBadges"]) as? [Object] ?? []
+        }.compactMap { $0["thumbnailBadgeViewModel"] as? Object }
+    }
+
     static func publicRelated(from data: Data) throws -> [ChannelVideo] {
         let contents = try publicContents(from: data)
         func object(_ base: Object, _ path: String...) -> Object? {
@@ -390,10 +428,14 @@ struct ChannelCatalog: Sendable {
                   let rows = object(metadata, "metadata", "contentMetadataViewModel")?["metadataRows"] as? [Object],
                   let parts = rows.first?["metadataParts"] as? [Object], let part = parts.first,
                   let creator = object(part, "text")?["content"] as? String else { return nil }
-            let images = object(video, "contentImage", "thumbnailViewModel", "image")?["sources"] as? [Object]
+            let thumbnail = object(video, "contentImage", "thumbnailViewModel")
+            let badges = publicThumbnailBadges(thumbnail)
+            guard !badges.contains(where: { ($0["badgeStyle"] as? String) == "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE" }) else { return nil }
+            let duration = badges.compactMap { RoomVideoFacts.seconds(from: $0["text"] as? String) }.first
+            let images = (thumbnail?["image"] as? Object)?["sources"] as? [Object]
             let image = (images?.last?["url"] as? String).flatMap(URL.init(string:))
             return ChannelVideo(id: id, title: name, channelID: owner, channelTitle: creator,
-                                thumbnail: image?.scheme == "https" ? image : nil)
+                                thumbnail: image?.scheme == "https" ? image : nil, durationSeconds: duration)
         }
     }
 

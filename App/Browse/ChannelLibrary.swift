@@ -21,6 +21,23 @@ final class ChannelLibrary {
     private(set) var discoveries = [ChannelVideo]()
     private(set) var creatorsToExplore = [ChannelVideo]()
     private(set) var topicShelves = [RoomTopicShelf]()
+    private var discoverChannelShelves = [RoomDiscoverShelf]()
+    private var related = RoomDiscoveryCache.Related()
+    private var watchedIDs = Set<String>()
+    private(set) var discoverLoading = true
+    private var relatedFailed = false
+    var discoverFailed: Bool { relatedFailed || discoveryFailed }
+    @ObservationIgnored private var relatedInFlight = Set<String>()
+
+    var discoverShelves: [RoomDiscoverShelf] {
+        RoomDiscovery.discoverShelves(channelShelves: discoverChannelShelves, related: related, follows: followed,
+                                     watched: watchedIDs, topicPicks: discoveries, creatorPicks: creatorsToExplore)
+    }
+
+    func setDiscoverHistory(_ videos: [ChannelVideo]) {
+        watchedIDs = Set(videos.map(\.id))
+    }
+
     private(set) var discoveryLoading = false
     private(set) var discoveryFailed = false
     private(set) var videoFacts = [String: RoomVideoFacts]()
@@ -62,6 +79,7 @@ final class ChannelLibrary {
 
     private func publishVideos() {
         videos = ChannelVideo.chronological(uploadsByChannel.values.flatMap { $0 }, followed: followed)
+        discoverChannelShelves = RoomDiscovery.channelShelves(chronological: videos, channels: channels)
     }
 
     func toggle(_ channel: RoomChannel, preview: [ChannelVideo]) {
@@ -80,7 +98,12 @@ final class ChannelLibrary {
     func refresh(account: ChannelAccount) async {
         let run = UUID()
         generation = run
+        relatedInFlight.removeAll()
+        related.expire(at: Date())
         if discoverySession != account.sessionID {
+            if discoverySession != nil { watchedIDs.removeAll() }
+            related = .init()
+            videoFacts = [:]
             discoverySession = account.sessionID
             discoveryScope = nil
             discoveryCache.removeAll()
@@ -89,9 +112,16 @@ final class ChannelLibrary {
             updateMembership()
         }
         isLoading = true
+        discoverLoading = true
+        relatedFailed = false
         warning = nil
         loadedCount = 0
-        defer { if generation == run { isLoading = false } }
+        defer {
+            if generation == run {
+                isLoading = false
+                discoverLoading = false
+            }
+        }
         var problems = [String]()
         var token: String?
         var details = [String: RoomChannel]()
@@ -100,6 +130,7 @@ final class ChannelLibrary {
         if account.isSignedIn {
             do {
                 let bearer = try await account.accessToken()
+                guard generation == run, !Task.isCancelled else { return }
                 token = bearer
                 async let inventory = api.subscriptions(token: bearer)
                 if profile == nil {
@@ -107,6 +138,7 @@ final class ChannelLibrary {
                     guard generation == run, !Task.isCancelled else { return }
                     profile = active
                 }
+                selectDiscoveryScope(RoomDiscoveryCache.Scope(signedIn: true, profileID: profile?.id))
                 let subs = try await inventory
                 guard generation == run, !Task.isCancelled else { return }
                 subscriptionInventory = subs
@@ -135,6 +167,7 @@ final class ChannelLibrary {
         updateMembership()
         let current = channels.map { details[$0.id] ?? $0 }
         async let discovery: Void = loadDiscovery(channels: current, token: token, restored: restored, run: run)
+        async let likedRecommendations: Void = loadLikedRecommendations(token: token, run: run)
         let api = self.api
         let bearer = token
         var failures = 0
@@ -175,11 +208,20 @@ final class ChannelLibrary {
             problems.append("Couldn’t refresh \(failures) of \(current.count) channels. \(lastFailure ?? "")")
         }
         warning = problems.isEmpty ? nil : problems.joined(separator: "\n")
-        await discovery
+        isLoading = false
+        let uploadSeeds = discoverChannelShelves.prefix(6).compactMap { $0.videos.first?.id }
+        async let uploadRecommendations: Void = loadRelatedPages(seeds: uploadSeeds, run: run)
+        _ = await (discovery, uploadRecommendations, likedRecommendations)
         guard generation == run, !Task.isCancelled else { return }
-        if creatorsToExplore.count < 3 && !videos.isEmpty { await loadRelatedUploads(run: run) }
+        // Retain just the current seed pages, including partial successes when another request failed.
+        let seeds = Set(uploadSeeds + related.likedIDs.prefix(5))
+        related.pages = related.pages.filter { seeds.contains($0.key) }
+        discoveryStore.writeRelated(related, for: discoveryScope)
+        if creatorsToExplore.count < 3 && !videos.isEmpty { publishRelatedUploads(seeds: uploadSeeds) }
+        discoverLoading = false
         guard let token, generation == run, !Task.isCancelled else { return }
-        let featuredRows = discoveries + creatorsToExplore + Array(videos.prefix(15))
+        let recommended = discoverShelves.filter { $0.id == "for-you" || $0.id == "from-subscriptions" }
+        let featuredRows = discoveries + creatorsToExplore + Array(videos.prefix(15)) + recommended.flatMap(\.videos)
         let ordered = featuredRows + topicShelves.flatMap(\.videos) + Array(videos.dropFirst(15))
         let available = Set(ordered.map(\.id))
         videoFacts = videoFacts.filter { available.contains($0.key) }
@@ -192,12 +234,17 @@ final class ChannelLibrary {
         }
     }
 
-    private func restoreDiscovery(scope: RoomDiscoveryCache.Scope?) -> RoomDiscoveryCache.Snapshot? {
+    private func selectDiscoveryScope(_ scope: RoomDiscoveryCache.Scope?) {
         if discoveryScope != scope {
             discoveryScope = scope
+            related = discoveryStore.readRelated(scope, now: Date())
             discoveryCache.removeAll()
             discoveryTopics = []; discoveries = []; creatorsToExplore = []; topicShelves = []
         }
+    }
+
+    private func restoreDiscovery(scope: RoomDiscoveryCache.Scope?) -> RoomDiscoveryCache.Snapshot? {
+        selectDiscoveryScope(scope)
         let now = Date()
         discoveryCache = discoveryCache.filter { $0.value.isFresh(at: now) }
         guard let snapshot = discoveryStore.read(scope, now: now) else { return nil }
@@ -227,20 +274,43 @@ final class ChannelLibrary {
 
     private var relatedCacheKey: String { "watch-related:" + RoomDiscoveryCache.membership(of: followed) }
 
-    private func loadRelatedUploads(run: UUID) async {
+    private func loadLikedRecommendations(token: String?, run: UUID) async {
+        guard let token, generation == run, !Task.isCancelled else { return }
+        if let ids = try? await api.likedIDs(token: token) {
+            guard generation == run, !Task.isCancelled else { return }
+            var seen = Set<String>()
+            related.likedIDs = ids.filter { seen.insert($0).inserted }
+            related.likesUpdated = Date()
+        } else {
+            guard generation == run, !Task.isCancelled else { return }
+            relatedFailed = true
+        }
+        await loadRelatedPages(seeds: Array(related.likedIDs.prefix(5)), run: run)
+    }
+
+    private func loadRelatedPages(seeds: [String], run: UUID) async {
+        guard generation == run, !Task.isCancelled else { return }
+        let api = self.api
+        let missing = seeds.filter { related.pages[$0] == nil && relatedInFlight.insert($0).inserted }
+        await withTaskGroup(of: (String, [ChannelVideo]?).self) { group in
+            for id in missing { group.addTask { (id, try? await api.related(to: id)) } }
+            for await (id, page) in group {
+                guard generation == run, !Task.isCancelled else { group.cancelAll(); return }
+                relatedInFlight.remove(id)
+                if let page {
+                    if !page.isEmpty { related.pages[id] = .init(date: Date(), videos: page) }
+                } else { relatedFailed = true }
+            }
+        }
+    }
+
+    private func publishRelatedUploads(seeds: [String]) {
         let key = relatedCacheKey
         guard !discoveryTopics.isEmpty, discoveryCache[key] == nil else { return }
-        let seeds = RoomDiscovery.picks(from: [videos], excluding: [], limit: 2).map(\.id)
-        let api = self.api
-        var pages = [String: [ChannelVideo]]()
-        await withTaskGroup(of: (String, [ChannelVideo]?).self) { group in
-            for id in seeds { group.addTask { (id, try? await api.related(to: id)) } }
-            for await (id, page) in group { pages[id] = page }
-        }
-        guard generation == run, !Task.isCancelled, relatedCacheKey == key else { return }
-        let related = RoomDiscovery.picks(from: seeds.compactMap { pages[$0] }, excluding: followed, limit: 50)
-        guard !related.isEmpty else { return }
-        discoveryCache[key] = .init(date: Date(), videos: related)
+        let pages = seeds.prefix(2).compactMap { related.pages[$0]?.videos }
+        let videos = RoomDiscovery.picks(from: pages, excluding: followed, limit: 50)
+        guard !videos.isEmpty else { return }
+        discoveryCache[key] = .init(date: Date(), videos: videos)
         let snapshot = RoomDiscoveryCache.Snapshot(membership: RoomDiscoveryCache.membership(of: followed),
                                                    topics: discoveryTopics, fallback: discoveryFallback, pages: discoveryCache)
         discoveryStore.write(snapshot, for: discoveryScope)

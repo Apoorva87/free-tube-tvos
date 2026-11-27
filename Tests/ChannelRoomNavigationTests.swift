@@ -3,6 +3,63 @@ import UIKit
 
 @MainActor
 final class ChannelRoomNavigationTests: XCTestCase {
+    func testDiscoverOpensOnLaunchAndBrowsesMusicWithTheRemote() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let music = app.buttons["discover-category-music"]
+        XCTAssertTrue(music.waitForExistence(timeout: 10), "Discover should be the opening screen.")
+        for category in ["for-you", "explore", "gaming", "news", "sports", "live"] {
+            XCTAssertTrue(app.buttons["discover-category-" + category].exists)
+        }
+        selectWithRemote(music, in: app)
+        let tiles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-'"))
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 50), "Music should show videos from the public catalog.")
+        let remote = XCUIRemote.shared
+        remote.press(.down)
+        let focused = tiles.matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        XCTAssertTrue(focused.waitForExistence(timeout: 5))
+        let first = focused.identifier
+        remote.press(.right)
+        let selected = focused.identifier
+        XCTAssertFalse(selected.isEmpty)
+        XCTAssertNotEqual(first, selected)
+        capture("Discover Music")
+        remote.press(.menu)
+        let discover = app.buttons["nav-discover"]
+        XCTAssertTrue(discover.waitForExistence(timeout: 5))
+        XCTAssertTrue(discover.hasFocus)
+        remote.press(.right)
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasFocus == true"),
+                                                  object: app.buttons[selected])
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 6), .completed)
+    }
+
+    func testDiscoverBuildsPersonalRowsFromLocalFollows() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        // A launch-domain override supplies follows for this run only.
+        let channels = [
+            ["id": "UCSMOQeBJ2RAnuFungnQOxLg", "title": "Blender", "topics": ["Animation"]],
+            ["id": "UCLA_DiR1FfKNvjuUpBHmylQ", "title": "NASA", "topics": ["Spaceflight"]]
+        ] as [[String: Any]]
+        let data = try JSONSerialization.data(withJSONObject: channels)
+        app.launchArguments = ["-ChannelRoom.LocalFollows.1", "<" + data.map { String(format: "%02x", $0) }.joined() + ">"]
+        app.launch()
+        let recommended = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-for-you-'")).firstMatch
+        let related = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-from-subscriptions-'")).firstMatch
+        XCTAssertTrue(recommended.waitForExistence(timeout: 75), "A followed channel should produce personalized recommendations.")
+        XCTAssertTrue(related.waitForExistence(timeout: 60), "A second row should show distinct recommendations.")
+        let channelRows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-channel-'"))
+        for _ in 0..<5 where !channelRows.firstMatch.exists { XCUIRemote.shared.press(.down) }
+        XCTAssertTrue(channelRows.firstMatch.waitForExistence(timeout: 30), "Followed channels should have their own upload rows.")
+        capture("Discover For you")
+        selectWithRemote(recommended, in: app)
+        let playing = app.descendants(matching: .any).matching(NSPredicate(format: "identifier IN %@", ["playing-title", "native-playback"]))
+        XCTAssertTrue(playing.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+    }
+
     func testProfileDownReachesHomeAndHistory() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -12,7 +69,7 @@ final class ChannelRoomNavigationTests: XCTestCase {
         let profile = app.buttons["account"]
         XCTAssertTrue(profile.waitForExistence(timeout: 6))
         XCTAssertTrue(focusWithRemote(profile, in: app))
-        for id in ["nav-home", "nav-channels", "nav-playlists", "nav-history"] {
+        for id in ["nav-discover", "nav-home", "nav-channels", "nav-playlists", "nav-history"] {
             remote.press(.down)
             XCTAssertTrue(app.buttons[id].hasFocus, "Expected focus on \(id)")
         }
@@ -36,6 +93,8 @@ final class ChannelRoomNavigationTests: XCTestCase {
         let profile = app.buttons["show-menu"]
         for _ in 0..<7 where !profile.hasFocus { remote.press(.up) }
         XCTAssertTrue(profile.hasFocus)
+        remote.press(.down)
+        XCTAssertTrue(app.buttons["compact-discover"].hasFocus)
         remote.press(.down)
         XCTAssertTrue(app.buttons["compact-home"].hasFocus)
         remote.press(.down)
@@ -220,6 +279,8 @@ final class ChannelRoomNavigationTests: XCTestCase {
     func testBackOpensNavigationAndRightRestoresTheTile() throws {
         let app = XCUIApplication()
         app.launch()
+        XCUIRemote.shared.press(.menu)
+        selectWithRemote(app.buttons["nav-home"], in: app)
         let videos = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'video-' OR identifier BEGINSWITH 'discovery-'"))
         guard videos.firstMatch.waitForExistence(timeout: 45) else {
             throw XCTSkip("Requires a TV with at least one followed channel and a loaded upload.")
@@ -268,6 +329,8 @@ final class ChannelRoomNavigationTests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
+        XCUIRemote.shared.press(.menu)
+        selectWithRemote(app.buttons["nav-home"], in: app)
         let tiles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-'"))
         let watch = app.buttons["featured-watch"]
         guard watch.waitForExistence(timeout: 45) else {
@@ -384,6 +447,8 @@ final class ChannelRoomNavigationTests: XCTestCase {
     func testSubscriptionsFiltersAndVideoFocus() throws {
         let app = XCUIApplication()
         app.launch()
+        XCUIRemote.shared.press(.menu)
+        selectWithRemote(app.buttons["nav-home"], in: app)
         XCTAssertTrue(app.buttons["featured-watch"].waitForExistence(timeout: 45))
         let remote = XCUIRemote.shared
         remote.press(.menu)
@@ -410,6 +475,8 @@ final class ChannelRoomNavigationTests: XCTestCase {
     func testHomeVideoOpensAPlayerOnTheTV() async throws {
         let app = XCUIApplication()
         app.launch()
+        XCUIRemote.shared.press(.menu)
+        selectWithRemote(app.buttons["nav-home"], in: app)
         let watch = app.buttons["featured-watch"]
         guard watch.waitForExistence(timeout: 45) else {
             throw XCTSkip("Requires a Home video on the signed-in TV.")
@@ -474,6 +541,8 @@ final class ChannelRoomNavigationTests: XCTestCase {
     private func playFeaturedMovie() throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launch()
+        XCUIRemote.shared.press(.menu)
+        selectWithRemote(app.buttons["nav-home"], in: app)
         let watch = app.buttons["featured-watch"]
         guard watch.waitForExistence(timeout: 45) else {
             throw XCTSkip("Requires a featured video on the signed-in TV.")

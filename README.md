@@ -1,6 +1,6 @@
 # Free Tube for Apple TV
 
-Free Tube is a native tvOS app for watching public YouTube videos and browsing the channels you follow. Home brings together recent uploads and two discovery rows. You can open a recommendation without subscribing, watch at 1.5× or 2×, or keep the current video playing in the corner while you look for another. Search, playback, and custom playlists run on the TV. The optional **Ask AI** feature connects to a paired computer on your home network.
+Free Tube is a native tvOS app for watching public YouTube videos and browsing the channels you follow. Discover opens first with personalized recommendations, recent uploads grouped by channel, and public categories. You can open a recommendation without subscribing, watch at 1.5× or 2×, or keep the current video playing in the corner while you look for another. Search, playback, and custom playlists run on the TV. The optional **Ask AI** feature connects to a paired computer on your home network.
 
 **[Try the interactive walkthrough →](https://apoorva87.github.io/free-tube-tvos/)**
 
@@ -26,8 +26,9 @@ The TV stores manually entered client settings and the Google refresh token in i
 
 | What you want to do | How |
 | --- | --- |
-| Explore new creators | Move down from the featured video to **Recommended** and **Creators to explore**. Move left or right within a row. |
-| Move down the sidebar | From the profile icon, press **Down** for Home. Keep pressing **Down** for Subscriptions, Playlists, History, Search and Ask AI. |
+| Explore new creators | Open **Discover → For you**. Browse **Recommended for you** and **More like your subscriptions**, then move down to individual channels. Select a tile to play it. |
+| Browse by category | From the top of Discover, select **Explore**, **Music**, **Gaming**, **News**, **Sports**, or **Live**. Press **Down** to browse the videos. |
+| Move down the sidebar | From the profile icon, press **Down** for Discover, then Home, Subscriptions, Playlists, History, Search and Ask AI. |
 | Return to your channels | Press **Back** while browsing and select **Subscriptions**. Focus a channel to filter its uploads. Press **Right** to return to the videos. |
 | Adjust playback speed | Press **Up** during playback and choose the speedometer. Available rates are 0.5×, 1×, 1.25×, 1.5× and 2×. |
 | Search while watching | Choose **Watch while browsing** in the player, then open **Search**. The in-app mini-player uses one-third of the screen width. The tvOS keyboard covers the picture temporarily during text entry. |
@@ -50,7 +51,7 @@ Open **Ask AI** from the sidebar or the Search screen. Select **Connect or check
 
 ## How it works
 
-- **Catalog.** The read-only Google connection imports subscriptions. Home uses channel topics and recent uploads to find other creators, filters out followed channels and divides distinct creators between the two discovery rows. Results depend on the available public catalog.
+- **Discover.** The read-only Google connection supplies subscriptions and recent likes. **For you** finds videos related to recent likes and uploads from followed channels, and uses channel topics when related results are sparse. It filters out watched videos, recent likes and duplicate recommendations. Channels with available uploads each get a row, ordered by their newest video. With no sign-in or local follows, Discover opens in **Explore**.
 - **Player.** The app resolves an available public stream and plays it with AVKit. This direct playback path does not request a separate YouTube ad player. Stream availability varies, and ads embedded in the video are part of the picture. When playback is unavailable, **Open in YouTube** hands the video to the official app, where YouTube’s own ad settings apply.
 - **Browsing during playback.** A shared playback session keeps the same AVPlayer item alive while the surface moves between full screen and the corner. The mini-player works inside Free Tube.
 

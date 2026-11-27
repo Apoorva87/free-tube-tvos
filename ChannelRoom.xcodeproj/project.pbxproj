@@ -15,6 +15,7 @@
 		A021471D2DBF840EFD9C1068 /* RoomHelperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 701D7EEC7CFAB9845A2D7B83 /* RoomHelperTests.swift */; };
 		BD913DE9702F4E7DD9CB94A1 /* PublicVideoStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23791368F704B7B338339444 /* PublicVideoStream.swift */; };
 		DB46120A50E8E292B9D10CA1 /* RoomPlaylistTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89E0A96AF307350EB4E4BA11 /* RoomPlaylistTests.swift */; };
+		E8FF7037932DCA74F2780F14 /* RoomCategoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A39B4FC08EF04643290B9088 /* RoomCategoryTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -43,6 +44,7 @@
 		701D7EEC7CFAB9845A2D7B83 /* RoomHelperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomHelperTests.swift; sourceTree = "<group>"; };
 		89E0A96AF307350EB4E4BA11 /* RoomPlaylistTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlaylistTests.swift; sourceTree = "<group>"; };
 		9D6EEFE9D4A64C93AF296801 /* ChannelRoomPlaybackTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ChannelRoomPlaybackTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A39B4FC08EF04643290B9088 /* RoomCategoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomCategoryTests.swift; sourceTree = "<group>"; };
 		C479E55380192DF805ED494D /* Build.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Build.xcconfig; sourceTree = "<group>"; };
 		DB1D85373A92DEC6F101DDE9 /* RoomAIValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomAIValidationTests.swift; sourceTree = "<group>"; };
 		E788CFEB10E78F1D2D96F994 /* ChannelPlaybackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelPlaybackTests.swift; sourceTree = "<group>"; };
@@ -94,6 +96,7 @@
 			children = (
 				E788CFEB10E78F1D2D96F994 /* ChannelPlaybackTests.swift */,
 				DB1D85373A92DEC6F101DDE9 /* RoomAIValidationTests.swift */,
+				A39B4FC08EF04643290B9088 /* RoomCategoryTests.swift */,
 				58A1FC35CAFC790ED843A9D0 /* RoomDiscoveryTests.swift */,
 				701D7EEC7CFAB9845A2D7B83 /* RoomHelperTests.swift */,
 				89E0A96AF307350EB4E4BA11 /* RoomPlaylistTests.swift */,
@@ -245,6 +248,7 @@
 			files = (
 				05904D07125CFE60145B960B /* ChannelPlaybackTests.swift in Sources */,
 				19C1F6B106B9725BF305725D /* RoomAIValidationTests.swift in Sources */,
+				E8FF7037932DCA74F2780F14 /* RoomCategoryTests.swift in Sources */,
 				4320009B82A7D19573A3726A /* RoomDiscoveryTests.swift in Sources */,
 				A021471D2DBF840EFD9C1068 /* RoomHelperTests.swift in Sources */,
 				DB46120A50E8E292B9D10CA1 /* RoomPlaylistTests.swift in Sources */,
@@ -404,7 +408,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 22;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -470,7 +474,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 22;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

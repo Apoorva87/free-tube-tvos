@@ -127,7 +127,8 @@ struct RoomVideoShelf: View {
         .scrollIndicators(.hidden)
         .focusSection()
         .onMoveCommand { direction in
-            if direction == .left, let first = videos.first, focus.wrappedValue == .video(first.id) { openMenu() }
+            if direction == .left, let first = videos.first,
+               focus.wrappedValue == .video(first.id, in: discoveryShelfID) { openMenu() }
         }
     }
 }
@@ -266,7 +267,7 @@ struct RoomVideoTile: View {
         Button(action: action) {
             RoomVideoTileLabel(video: video, portrait: portrait, position: position, seconds: seconds)
         }
-        .buttonStyle(VideoButtonStyle()).focused(focus, equals: .video(video.id))
+        .buttonStyle(VideoButtonStyle()).focused(focus, equals: .video(video.id, in: discoveryShelfID))
         .contextMenu {
             Button { addingToPlaylist = true } label: { Label("Add to playlist", systemImage: "text.badge.plus") }
         }

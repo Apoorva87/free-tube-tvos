@@ -44,6 +44,83 @@ final class RoomDiscoveryTests: XCTestCase {
         XCTAssertEqual(Set(all.map(\.id)).count, all.count)
     }
 
+    func testDiscoverOrdersEveryChannelByItsLatestUploadAndKeepsTenPerChannel() {
+        let channels = (0..<13).map { RoomChannel(id: "c" + String($0), title: "Channel " + String($0)) }
+        var uploads = (0..<12).map { video("v" + String($0), by: channels[$0].id, day: $0) }
+        uploads += (1..<15).map { video("new" + String($0), by: "c0", day: 20 + $0) }
+        let feed = ChannelVideo.chronological(uploads + uploads, followed: Set(channels.map(\.id)))
+        let rows = RoomDiscovery.channelShelves(chronological: feed, channels: channels)
+        XCTAssertEqual(rows.count, 12)
+        XCTAssertEqual(rows.prefix(3).map(\.id), ["channel-c0", "channel-c11", "channel-c10"])
+        XCTAssertEqual(rows[0].title, "Channel 0")
+        XCTAssertEqual(rows[0].videos.map(\.id), (5...14).reversed().map { "new" + String($0) })
+    }
+
+    func testDiscoverInterleavesEachSeedListAndExcludesSeenLikedAndSubscriptionVideos() {
+        let channels = [RoomChannel(id: "one", title: "One"), RoomChannel(id: "two", title: "Two")]
+        let uploads = [video("seed1", by: "one", day: 2), video("seed2", by: "two", day: 1)]
+        let channelRows = RoomDiscovery.channelShelves(chronological: uploads, channels: channels)
+        func page(_ ids: [String]) -> RoomDiscoveryCache.Page {
+            RoomDiscoveryCache.Page(date: Date(), videos: ids.map { video($0, by: "creator-" + $0) })
+        }
+        let related = RoomDiscoveryCache.Related(likedIDs: ["like1", "like2"], likesUpdated: Date(), pages: [
+            "like1": page(["like2", "a", "c", "seen"]), "like2": page(["b", "seed1", "d"]),
+            "seed1": page(["a", "f", "h"]), "seed2": page(["g", "i", "seen"])
+        ])
+        let rows = RoomDiscovery.discoverShelves(channelShelves: channelRows, related: related, follows: ["one", "two"],
+                                                watched: ["seen"], topicPicks: [], creatorPicks: [])
+        XCTAssertEqual(rows.map(\.id), ["for-you", "from-subscriptions", "channel-one", "channel-two"])
+        XCTAssertEqual(rows[0].videos.map(\.id), ["b", "a", "c", "d"])
+        XCTAssertEqual(rows[1].videos.map(\.id), ["g", "f", "i", "h"])
+    }
+
+    func testGuestUsesTopicResultsAndCanFillBothRowsFromASingleSuccessfulUploadSeed() {
+        let seed = video("upload", by: "local")
+        let row = RoomDiscoverShelf(id: "channel-local", title: "Local", videos: [seed])
+        let videos = (0..<5).map { video(String($0), by: "other") }
+        let related = RoomDiscoveryCache.Related(pages: [seed.id: .init(date: Date(), videos: videos)])
+        let rows = RoomDiscovery.discoverShelves(channelShelves: [row], related: related, follows: ["local"],
+                                                watched: ["1"], topicPicks: [], creatorPicks: [])
+        XCTAssertEqual(rows.map(\.id), ["for-you", "from-subscriptions", "channel-local"])
+        XCTAssertEqual(rows[0].videos.map(\.id), ["0", "2"])
+        XCTAssertEqual(rows[1].videos.map(\.id), ["3", "4"])
+
+        let guest = RoomDiscovery.discoverShelves(channelShelves: [row], related: .init(), follows: ["local"],
+                                                 watched: ["1"], topicPicks: [seed, videos[0], videos[1]], creatorPicks: videos)
+        XCTAssertEqual(guest[0].videos.map(\.id), ["0"])
+        XCTAssertEqual(guest[1].videos.map(\.id), ["2", "3", "4"])
+
+        let likesOnly = RoomDiscoveryCache.Related(likedIDs: ["like"], likesUpdated: Date(),
+                                                  pages: ["like": .init(date: Date(), videos: videos)])
+        let personal = RoomDiscovery.discoverShelves(channelShelves: [], related: likesOnly, follows: [],
+                                                    watched: [], topicPicks: [], creatorPicks: [])
+        XCTAssertEqual(personal.map(\.id), ["for-you"])
+        let overlap = RoomDiscoveryCache.Related(likedIDs: [seed.id], likesUpdated: Date(),
+                                               pages: [seed.id: .init(date: Date(), videos: videos)])
+        let shared = RoomDiscovery.discoverShelves(channelShelves: [row], related: overlap, follows: ["local"],
+                                                 watched: [], topicPicks: [], creatorPicks: [])
+        XCTAssertEqual(shared.map(\.id), ["for-you", "from-subscriptions", "channel-local"])
+        XCTAssertEqual(shared[0].videos + shared[1].videos, videos)
+    }
+
+    func testRelatedPagesAndLikesAreIsolatedByProfileAndExpireIndividually() {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = RoomDiscoveryCache(directory: directory)
+        let now = Date()
+        let fresh = RoomDiscoveryCache.Page(date: now, videos: [video("r", by: "c")])
+        let expired = RoomDiscoveryCache.Page(date: now.addingTimeInterval(-21_600), videos: [video("x", by: "c")])
+        let related = RoomDiscoveryCache.Related(likedIDs: ["one"], likesUpdated: expired.date, pages: ["one": fresh, "two": expired])
+        let scope = RoomDiscoveryCache.Scope.profile("UC0000000000000000000000")
+        store.writeRelated(related, for: scope)
+        XCTAssertEqual(store.readRelated(scope, now: now).pages["one"]?.videos, fresh.videos)
+        XCTAssertNil(store.readRelated(scope, now: now).pages["two"])
+        XCTAssertTrue(store.readRelated(scope, now: now).likedIDs.isEmpty)
+        XCTAssertTrue(store.readRelated(.local, now: now).pages.isEmpty)
+        XCTAssertTrue(store.readRelated(.profile("UC1111111111111111111111"), now: now).pages.isEmpty)
+        XCTAssertTrue(store.readRelated(nil, now: now).pages.isEmpty)
+    }
+
     func testDiskCacheSeparatesProfilesAndLocalFollowsAndRequiresSignedInIdentity() throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -104,6 +181,24 @@ final class RoomDiscoveryTests: XCTestCase {
         XCTAssertEqual(result.first?.title, "Ada's \"machines\"")
     }
 
+    @MainActor func testGuestAndFailedUploadsPlaylistFallBackToTheVerifiedPublicVideosTab() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PublicUploadsFixture.self]
+        let catalog = ChannelCatalog(session: URLSession(configuration: config))
+        let id = PublicUploadsFixture.channelID
+        let channel = RoomChannel(id: id, title: "Fixture", uploadsID: "uploads")
+        for token in [nil, "test-token"] {
+            let page = try await catalog.uploads(channel, token: token)
+            XCTAssertEqual(page.videos.map(\.id), ["upload00001"])
+            let first = try XCTUnwrap(page.videos.first)
+            XCTAssertEqual(first.channelID, id)
+            XCTAssertEqual(first.channelTitle, "Fixture")
+            XCTAssertEqual(first.thumbnail?.scheme, "https")
+            XCTAssertEqual(first.publishedAt.timeIntervalSinceNow, -172_800, accuracy: 65)
+        }
+        XCTAssertThrowsError(try ChannelCatalog.publicUploads(from: PublicUploadsFixture.html(), channelID: "UC1111111111111111111111"))
+    }
+
     func testWatchRelatedOnlyAcceptsVideosWithAnIdentifiableCreator() throws {
         let id = "UC1111111111111111111111"
         let avatar = ["rendererContext": ["commandContext": ["onTap": ["innertubeCommand": ["browseEndpoint": ["browseId": id]]]]]]
@@ -122,4 +217,53 @@ final class RoomDiscoveryTests: XCTestCase {
         XCTAssertEqual(result.map(\.id), ["related"])
         XCTAssertEqual(result.first?.channelID, id)
     }
+}
+
+private final class PublicUploadsFixture: URLProtocol, @unchecked Sendable {
+    static let channelID = "UC0000000000000000000000"
+
+    static func html() throws -> Data {
+        typealias Object = [String: Any]
+        let parts = [["accessibilityLabel": "2 days ago"]]
+        let text: Object = ["title": ["content": "Upload"], "metadata": ["contentMetadataViewModel": ["metadataRows": [["metadataParts": parts]]]]]
+        let image = ["thumbnailViewModel": ["image": ["sources": [["url": "https://example.org/poster.jpg"]]]]]
+        var card: Object = ["contentId": "upload00001", "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                            "metadata": ["lockupMetadataViewModel": text], "contentImage": image]
+        func item(_ card: Object) -> Object { ["richItemRenderer": ["content": ["lockupViewModel": card]]] }
+        let first = item(card)
+        card["contentId"] = "foreign0001"
+        var other = text
+        other["image"] = ["decoratedAvatarViewModel": ["rendererContext": ["commandContext": ["onTap": [
+            "innertubeCommand": ["browseEndpoint": ["browseId": "UC1111111111111111111111"]]]]]]]
+        card["metadata"] = ["lockupMetadataViewModel": other]
+        let grid = ["richGridRenderer": ["contents": [first, first, item(card)]]]
+        let tab: Object = ["selected": true, "content": grid, "endpoint": ["browseEndpoint": ["browseId": channelID],
+                           "commandMetadata": ["webCommandMetadata": ["url": "/@fixture/videos"]]]]
+        let root: Object = ["metadata": ["channelMetadataRenderer": ["externalId": channelID, "title": "Fixture"]],
+                            "contents": ["twoColumnBrowseResultsRenderer": ["tabs": [["tabRenderer": tab]]]]]
+        let json = try JSONSerialization.data(withJSONObject: root)
+        return Data(("<script>var ytInitialData = " + String(decoding: json, as: UTF8.self) + ";</script>").utf8)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let url = request.url!
+        let status: Int
+        let body: Data
+        if url.path.hasSuffix("/videos"), url.host == "www.youtube.com", request.value(forHTTPHeaderField: "Authorization") == nil {
+            status = 200
+            body = (try? Self.html()) ?? Data()
+        } else {
+            // Both the signed-in uploads playlist and public Atom requests fail.
+            status = 503
+            body = Data()
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!,
+                            cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
