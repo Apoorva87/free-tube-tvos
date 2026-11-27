@@ -393,3 +393,71 @@ private final class WatchMetadataFixture: URLProtocol, @unchecked Sendable {
         return Data(("<meta name='description' content='SEO summary'>" + script("ytInitialPlayerResponse", player) + script("ytInitialData", root)).utf8)
     }
 }
+
+extension RoomDiscoveryTests {
+    @MainActor func testInterestFeedUsesConfiguredQueriesCachesAndRetriesFailures() async {
+        let shared = video("shared", by: "C")
+        let jazz = video("jazz", by: "J")
+        let space = video("space", by: "S")
+        actor Source {
+            var calls = [String: Int]()
+            func attempt(_ query: String) throws {
+                calls[query, default: 0] += 1
+                if query == "space flight", calls[query] == 1 { throw URLError(.timedOut) }
+            }
+        }
+        let source = Source()
+        let feed = RoomInterestFeed { query in
+            try await source.attempt(query)
+            return query == "live jazz" ? [shared, jazz, jazz] : [shared, space]
+        }
+        let rows = [
+            RoomInterestRow(id: "j", title: "Jazz", query: " live jazz ", enabled: true),
+            RoomInterestRow(id: "s", title: "Space", query: "space flight", enabled: true),
+            RoomInterestRow(id: "disabled", title: "Games", query: "games", enabled: false),
+            RoomInterestRow(id: "reserved", title: "Personal", query: " ", enabled: true)
+        ]
+        await feed.load(rows: rows)
+        XCTAssertEqual(feed.shelves.map(\.id), ["j"])
+        XCTAssertEqual(feed.shelves.first?.videos, [shared, jazz])
+        XCTAssertTrue(feed.errorMessage?.contains("Space") == true)
+        await feed.load(rows: rows)
+        XCTAssertEqual(feed.shelves.map(\.id), ["j", "s"])
+        XCTAssertEqual(feed.shelves.last?.videos, [space])
+        XCTAssertNil(feed.errorMessage)
+        let calls = await source.calls
+        XCTAssertEqual(calls, ["live jazz": 1, "space flight": 2])
+
+        await feed.load(rows: [rows[1], rows[0]], force: true)
+        XCTAssertEqual(feed.shelves.map(\.id), ["s", "j"])
+        XCTAssertEqual(feed.shelves.first?.videos, [shared, space])
+        let refreshed = await source.calls
+        XCTAssertEqual(refreshed, ["live jazz": 2, "space flight": 3])
+    }
+
+    @MainActor func testInterestFeedPublishesProgressAndIgnoresSupersededResults() async throws {
+        let slow = RoomInterestRow(id: "s", title: "Slow", query: "slow", enabled: true)
+        let fast = RoomInterestRow(id: "f", title: "Fast", query: "fast", enabled: true)
+        let (gate, release) = AsyncStream<Void>.makeStream()
+        let result = video("v", by: "C")
+        let feed = RoomInterestFeed { query in
+            if query == "slow" {
+                for await _ in gate { break }
+            }
+            return [result]
+        }
+        let loading = Task { await feed.load(rows: [slow, fast]) }
+        defer { release.finish() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while feed.shelves.isEmpty && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(feed.shelves.map(\.id), ["f"])
+        XCTAssertTrue(feed.isLoading)
+        await feed.load(rows: [fast])
+        release.finish()
+        await loading.value
+        XCTAssertEqual(feed.shelves.map(\.id), ["f"])
+        XCTAssertFalse(feed.isLoading)
+    }
+}

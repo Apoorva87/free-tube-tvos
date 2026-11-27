@@ -3,6 +3,10 @@ import SwiftUI
 struct RoomDiscoverView: View {
     let library: ChannelLibrary
     let catalog: RoomCategoryCatalog
+    let preferences: RoomDiscoverPreferences
+    let interestFeed: RoomInterestFeed
+    let personalizedRows: [RoomDiscoverShelf]
+    let settings: () -> Void
     let category: RoomDiscoverCategory
     let reloadID: UUID?
     let signedIn: Bool
@@ -15,6 +19,7 @@ struct RoomDiscoverView: View {
     let signIn: () -> Void
 
     private struct Request: Equatable {
+        let rows: [RoomInterestRow]
         let category: RoomDiscoverCategory
         let reloadID: UUID?
     }
@@ -35,8 +40,12 @@ struct RoomDiscoverView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("discover-screen")
-        .task(id: Request(category: category, reloadID: reloadID)) {
-            await catalog.load(category, force: reloadID != nil)
+        .task(id: Request(rows: category == .forYou ? preferences.rows : [], category: category, reloadID: reloadID)) {
+            if category == .forYou {
+                await interestFeed.load(rows: preferences.rows, force: reloadID != nil)
+            } else {
+                await catalog.load(category, force: reloadID != nil)
+            }
         }
     }
 
@@ -59,19 +68,22 @@ struct RoomDiscoverView: View {
 
     private var feed: some View {
         let personal = category == .forYou
-        let loading = personal ? library.isLoading || library.discoverLoading : catalog.category != category || catalog.isLoading
-        let rows = personal ? library.discoverShelves : (catalog.category == category ? catalog.shelves : [])
-        let issue = personal ? library.warning : (catalog.category == category ? catalog.errorMessage : nil)
+        let hasLibraryRows = preferences.rows.contains { $0.enabled && $0.query.isEmpty }
+        let loading = personal ? interestFeed.isLoading || (hasLibraryRows && (library.isLoading || library.discoverLoading)) : catalog.category != category || catalog.isLoading
+        let rows = personal ? personalizedRows : (catalog.category == category ? catalog.shelves : [])
+        let issue = personal ? interestFeed.errorMessage ?? (hasLibraryRows ? library.warning : nil) : (catalog.category == category ? catalog.errorMessage : nil)
         return ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 28) {
                 if let issue { RoomNotice(message: issue) }
                 if rows.isEmpty {
                     if loading {
                         RoomLoading(text: personal ? "Finding videos for you…" : "Loading \(category.title)…")
-                    } else if personal && library.discoverFailed && issue == nil {
+                    } else if personal && hasLibraryRows && library.discoverFailed && issue == nil {
                         RoomNotice(message: "Couldn’t load your recommendations. Refresh Discover to try again.")
-                    } else if personal && library.followed.isEmpty {
+                    } else if personal && hasLibraryRows && library.followed.isEmpty && !preferences.rows.contains(where: { $0.enabled && !$0.query.isEmpty }) {
                         emptyLibrary
+                    } else if personal {
+                        Button("Choose Discover rows", action: settings).buttonStyle(RoomToolbarStyle())
                     } else if issue == nil {
                         Text(personal ? "No recommendations or recent uploads yet." : "No videos available for \(category.title).")
                             .font(.system(size: 27)).foregroundStyle(RoomPalette.muted)

@@ -2,8 +2,8 @@ import AVFoundation
 import SwiftUI
 
 enum RoomSection: String, CaseIterable {
-    case discover = "Discover", home = "Home", channels = "Channels", search = "Search", playlists = "Playlists", history = "History", assistant = "Ask AI"
-    static let sidebarOrder: [Self] = [.discover, .home, .channels, .playlists, .history, .search, .assistant]
+    case discover = "Discover", home = "Home", channels = "Channels", search = "Search", playlists = "Playlists", history = "History", assistant = "Ask AI", settings = "Settings"
+    static let sidebarOrder: [Self] = [.discover, .home, .channels, .playlists, .history, .search, .assistant, .settings]
     var title: String { self == .channels ? "Subscriptions" : rawValue }
     var navigationID: String { self == .assistant ? "assistant" : rawValue.lowercased() }
     var icon: String {
@@ -13,6 +13,7 @@ enum RoomSection: String, CaseIterable {
         case .channels: "rectangle.stack.fill"
         case .search: "magnifyingglass"
         case .assistant: "sparkles"
+        case .settings: "gearshape"
         case .playlists: "list.and.film"
         case .history: "clock.arrow.circlepath"
         }
@@ -20,7 +21,7 @@ enum RoomSection: String, CaseIterable {
 }
 
 enum RoomBrowseFocus: Hashable {
-    case menu, featured, newPlaylist, assistantPrompt, historyBrowse, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
+    case settingsFirst, menu, featured, newPlaylist, assistantPrompt, historyBrowse, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
     case discoverCategory(RoomDiscoverCategory), discoverRefresh, discoverFind, discoverSignIn
     case shelfVideo(shelf: String, video: String)
 
@@ -65,6 +66,8 @@ private struct RoomShell: View {
     @State private var section = RoomSection.discover
     @State private var chosenCategory: RoomDiscoverCategory?
     @State private var categoryCatalog = RoomCategoryCatalog()
+    @State private var preferences = RoomDiscoverPreferences()
+    @State private var interestFeed = RoomInterestFeed()
     @State private var categoryReload: UUID?
     @Binding var accountOpen: Bool
     @Binding var startsProfileSwitch: Bool
@@ -77,7 +80,23 @@ private struct RoomShell: View {
     @FocusState private var focus: RoomBrowseFocus?
 
     private var discoverCategory: RoomDiscoverCategory {
-        chosenCategory ?? (account.isSignedIn || !library.followed.isEmpty ? .forYou : .explore)
+        chosenCategory ?? .forYou
+    }
+
+    private var personalizedRows: [RoomDiscoverShelf] {
+        let enabled = preferences.rows.filter(\.enabled)
+        let legacy = enabled.contains { $0.query.isEmpty } ? library.discoverShelves : []
+        var seen = Set<String>()
+        return enabled.flatMap { row -> [RoomDiscoverShelf] in
+            switch row.id {
+            case "personal": return legacy.filter { ["for-you", "from-subscriptions"].contains($0.id) }
+            case "channels": return legacy.filter { $0.id.hasPrefix("channel-") }
+            default: return interestFeed.shelves.filter { $0.id == row.id }
+            }
+        }.compactMap { shelf in
+            let videos = shelf.videos.filter { seen.insert($0.id).inserted }
+            return videos.isEmpty ? nil : RoomDiscoverShelf(id: shelf.id, title: shelf.title, videos: videos)
+        }
     }
 
     var body: some View {
@@ -121,11 +140,13 @@ private struct RoomShell: View {
                     Group {
                         switch section {
                         case .discover:
-                            RoomDiscoverView(library: library, catalog: categoryCatalog, category: discoverCategory,
+                            RoomDiscoverView(library: library, catalog: categoryCatalog, preferences: preferences, interestFeed: interestFeed,
+                                             personalizedRows: personalizedRows, settings: { choose(.settings) }, category: discoverCategory,
                                              reloadID: categoryReload, signedIn: account.isSignedIn, focus: $focus,
                                              select: { chosenCategory = $0; categoryReload = nil },
                                              refresh: refreshDiscover, openMenu: { menuOpen = true }, play: onPlay,
                                              findChannels: { choose(.search) }, signIn: { accountOpen = true })
+                        case .settings: RoomDiscoverSettings(preferences: preferences, focus: $focus)
                         case .home: home
                         case .channels:
                             RoomSubscriptionsView(library: library, focus: $focus, play: play, openChannel: { channel = $0 },
@@ -284,6 +305,7 @@ private struct RoomShell: View {
         case .playlists: .newPlaylist
         case .history: history.firstFocus
         case .assistant: .assistantPrompt
+        case .settings: .settingsFirst
         case .search: .menu
         }
     }
@@ -291,15 +313,17 @@ private struct RoomShell: View {
     private func returningFocus(in item: RoomSection) -> RoomBrowseFocus {
         guard let lastTile else { return firstFocus(in: item) }
         if item == .discover, case .shelfVideo = lastTile {
-            let rows = discoverCategory == .forYou ? library.discoverShelves : categoryCatalog.shelves
+            let rows = discoverCategory == .forYou ? personalizedRows : categoryCatalog.shelves
             return RoomDiscoverView.availableFocus(lastTile, category: discoverCategory, rows: rows)
         }
         return lastTile
     }
 
     private func refreshDiscover() {
-        if discoverCategory == .forYou { library.requestRefresh() }
-        else { categoryReload = UUID() }
+        if discoverCategory == .forYou && preferences.rows.contains(where: { $0.enabled && $0.query.isEmpty }) {
+            library.requestRefresh()
+        }
+        categoryReload = UUID()
     }
 
     private func closeMenu(to target: RoomBrowseFocus) {
@@ -378,7 +402,7 @@ private struct RoomBrowseRail: View {
         }
         .onChange(of: focus.wrappedValue) { _, target in
             switch target {
-            case .featured, .newPlaylist, .historyBrowse, .video, .channel, .subscriptionFilter,
+            case .settingsFirst, .featured, .newPlaylist, .historyBrowse, .video, .channel, .subscriptionFilter,
                  .discoverCategory, .discoverRefresh, .discoverFind, .discoverSignIn, .shelfVideo:
                 lastTile = target
             default: break

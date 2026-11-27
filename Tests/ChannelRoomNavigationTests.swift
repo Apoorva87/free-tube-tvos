@@ -36,16 +36,63 @@ final class ChannelRoomNavigationTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 6), .completed)
     }
 
+    func testForYouInterestRowsReflectSettingsAfterRelaunch() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["CHANNELROOM_DISCOVER_DEFAULTS_SUITE"] = "ChannelRoom.UITests." + UUID().uuidString
+        app.launch()
+        let remote = XCUIRemote.shared
+        let forYou = app.buttons["discover-category-for-you"]
+        let tiles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-'"))
+        let education = tiles.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-education-'")).firstMatch
+        let economics = tiles.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-economics-'")).firstMatch
+        let focused = tiles.matching(NSPredicate(format: "hasFocus == true")).firstMatch
+
+        func checkFirstRow(_ tile: XCUIElement, prefix: String) {
+            XCTAssertTrue(forYou.waitForExistence(timeout: 10))
+            XCTAssertTrue(forYou.isSelected, "Discover should open with For you selected.")
+            XCTAssertTrue(tile.waitForExistence(timeout: 75), "Expected public videos for \(prefix).")
+            XCTAssertTrue(focusWithRemote(forYou, in: app))
+            remote.press(.down)
+            XCTAssertTrue(focused.waitForExistence(timeout: 5))
+            XCTAssertTrue(focused.identifier.hasPrefix(prefix), "First row focused \(focused.identifier)")
+        }
+
+        checkFirstRow(education, prefix: "discovery-education-")
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-settings"], in: app)
+        let toggle = app.buttons["settings.toggle.education"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 8))
+        selectWithRemote(toggle, in: app)
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-discover"], in: app)
+        checkFirstRow(economics, prefix: "discovery-economics-")
+        XCTAssertFalse(education.exists)
+
+        app.terminate()
+        app.launch()
+        checkFirstRow(economics, prefix: "discovery-economics-")
+        XCTAssertFalse(education.exists)
+    }
+
     func testDiscoverBuildsPersonalRowsFromLocalFollows() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
-        // A launch-domain override supplies follows for this run only.
+        // Supply local follows and opt into their two row groups for this launch.
         let channels = [
             ["id": "UCSMOQeBJ2RAnuFungnQOxLg", "title": "Blender", "topics": ["Animation"]],
             ["id": "UCLA_DiR1FfKNvjuUpBHmylQ", "title": "NASA", "topics": ["Spaceflight"]]
         ] as [[String: Any]]
-        let data = try JSONSerialization.data(withJSONObject: channels)
-        app.launchArguments = ["-ChannelRoom.LocalFollows.1", "<" + data.map { String(format: "%02x", $0) }.joined() + ">"]
+        let rowIDs = ["education", "economics", "health", "trending-hindi", "trending-english", "personal", "channels"]
+        let rows: [[String: Any]] = rowIDs.map { id in
+            ["id": id, "title": id, "query": "", "enabled": id == "personal" || id == "channels"]
+        }
+        func launchData(_ items: [[String: Any]]) throws -> String {
+            let data = try JSONSerialization.data(withJSONObject: items)
+            return "<" + data.map { String(format: "%02x", $0) }.joined() + ">"
+        }
+        app.launchArguments = ["-ChannelRoom.LocalFollows.1", try launchData(channels),
+                               "-room.discover.rows.v1", try launchData(rows)]
         app.launch()
         let recommended = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-for-you-'")).firstMatch
         let related = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-from-subscriptions-'")).firstMatch

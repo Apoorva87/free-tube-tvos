@@ -118,3 +118,35 @@ final class RoomCategoryTests: XCTestCase {
         return RoomDiscoverShelf(id: category.id, title: category.title, videos: [video])
     }
 }
+
+extension RoomCategoryTests {
+    @MainActor
+    func testDiscoverRowPreferencesPersistOrderVisibilityAndCustomTopics() throws {
+        let suite = "RoomCategoryTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = RoomDiscoverPreferences(defaults: defaults)
+        XCTAssertEqual(preferences.rows.filter(\.enabled).map(\.title),
+                       ["Education", "Economics", "Health", "Trending Hindi songs", "Trending English songs"])
+        XCTAssertEqual(preferences.rows.filter { !$0.enabled }.map(\.id), ["personal", "channels"])
+
+        preferences.toggle("health")
+        preferences.move("health", by: -1)
+        preferences.move("education", by: -1)
+        preferences.remove("economics")
+        preferences.toggle("personal")
+        preferences.addTopic("  Space telescopes  ")
+        let custom = try XCTUnwrap(preferences.rows.last)
+        XCTAssertTrue(custom.isCustom)
+        XCTAssertTrue(custom.enabled)
+        XCTAssertEqual(custom.query, "Space telescopes")
+        XCTAssertEqual(Array(preferences.rows.prefix(3).map(\.id)), ["education", "health", "economics"])
+        XCTAssertFalse(try XCTUnwrap(preferences.rows.first { $0.id == "health" }).enabled)
+        XCTAssertTrue(try XCTUnwrap(preferences.rows.first { $0.id == "personal" }).enabled)
+        let restored = RoomDiscoverPreferences(defaults: defaults)
+        XCTAssertEqual(restored.rows, preferences.rows)
+        restored.remove(custom.id)
+        restored.addTopic("   ")
+        XCTAssertEqual(RoomDiscoverPreferences(defaults: defaults).rows, Array(preferences.rows.dropLast()))
+    }
+}

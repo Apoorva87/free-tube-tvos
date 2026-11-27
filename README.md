@@ -6,15 +6,9 @@ Free Tube is an independent YouTube client for Apple TV. Open **Discover** to se
 
 ## Start in Discover
 
-On a fresh install, **Explore** brings together picks from Music, Gaming, News, Sports, and Live. Choose a category across the top to browse more of it. You can start watching immediately or follow a public channel from Search.
+Discover opens on **For you**. The first three rows are **Education**, **Economics**, and **Health**, followed by **Trending Hindi songs** and **Trending English songs**. Each topic uses public video search. The music rows search for trending songs in each language and do not represent an official chart.
 
-Once you follow channels locally or connect your YouTube account, Discover opens on **For you**. Its rows appear in this order when results are available.
-
-| Row | What you’ll find |
-| --- | --- |
-| **Recommended for you** | Videos from new creators related to your recent YouTube likes. Free Tube can also use the topics of channels you follow. |
-| **More like your subscriptions** | Suggestions related to recent uploads from several followed channels. Both recommendation rows filter out repeats, recent likes, and videos already in your Free Tube history. |
-| **One row per channel** | Up to ten recent uploads from each followed channel with available videos. The channel with the newest upload appears first. |
+Open **Settings → Discover rows** in the sidebar to show or hide any row, move it up or down, or add your own search topic. Turn on **Personal recommendations** for suggestions from likes and followed channels, or **From your subscriptions** for recent uploads grouped by creator. Changes are saved on this Apple TV. Explore, Music, Gaming, News, Sports, and Live remain available across the top of Discover.
 
 The native tvOS player supports speeds from 0.5× to 2×. Search, viewing history, and playlists work directly on the TV. **Ask AI** adds video research and playlist drafting through an optional paired computer.
 
@@ -41,7 +35,7 @@ The TV stores manually entered client settings and the Google refresh token in i
 | What you want to do | How |
 | --- | --- |
 | Browse Discover | Choose a category, press **Down** to enter its rows, then **Left** or **Right** to browse thumbnails. Press **Select** to play a recommendation without following its channel. |
-| Move down the sidebar | From the profile icon, press **Down** for Discover, then Home, Subscriptions, Playlists, History, Search and Ask AI. |
+| Move down the sidebar | From the profile icon, press **Down** for Discover, then Home, Subscriptions, Playlists, History, Search, Ask AI, and Settings. |
 | Return to your channels | Press **Back** while browsing and select **Subscriptions**. Focus a channel to filter its uploads. Press **Right** to return to the videos. |
 | Adjust playback speed | Press **Up** during playback and choose the speedometer. Available rates are 0.5×, 1×, 1.25×, 1.5× and 2×. |
 | Visit the creator | Choose **View creator** in the player controls. Play another upload, follow the channel on this TV, or select **Subscribe on YouTube** and scan the code to subscribe on your phone. When you close the code, Free Tube refreshes the subscriptions for its signed-in profile. |
