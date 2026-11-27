@@ -224,6 +224,7 @@ struct RoomPlaylistDraftView: View {
                                     RoomVideoTileLabel(video: video, position: index + 1)
                                         .accessibilityElement(children: .combine)
                                         .focusable()
+                                        .videoPlaylistMenu(for: video)
                                 }
                             }
                         }
@@ -254,6 +255,7 @@ struct RoomPlaylistDraftView: View {
                                 RoomVideoTileLabel(video: video, position: savedCount + index + 1)
                             }
                             .buttonStyle(VideoButtonStyle())
+                            .videoPlaylistMenu(for: video, seconds: durations[video.id])
                             .accessibilityIdentifier("playlist-edit-" + video.id)
                             .accessibilityHint("Choose to reorder or remove this video.")
                         }
@@ -273,6 +275,7 @@ struct RoomPlaylistDraftView: View {
                                 RoomVideoTileLabel(video: video, seconds: durations[video.id])
                             }
                             .buttonStyle(VideoButtonStyle())
+                            .videoPlaylistMenu(for: video, seconds: durations[video.id])
                             .accessibilityIdentifier("playlist-add-" + video.id)
                             .accessibilityHint("Add this video to the playlist.")
                         }

@@ -291,7 +291,7 @@ final class ChannelRoomNavigationTests: XCTestCase {
         selectTransportAction("Show more options.", in: app)
         let similar = app.descendants(matching: .any)["player-panel-similar"]
         XCTAssertTrue(similar.waitForExistence(timeout: 6))
-        XCTAssertEqual(similar.staticTexts["player-panel-video-title"].label, "Big Buck Bunny")
+        XCTAssertTrue(similar.staticTexts["Similar videos"].exists)
         XCTAssertTrue(similar.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'video-'")).firstMatch
             .waitForExistence(timeout: 45), "The public movie should have related results.")
         XCTAssertFalse(similar.buttons["video-aqz-KE-bpKQ"].exists)
@@ -302,7 +302,8 @@ final class ChannelRoomNavigationTests: XCTestCase {
         XCTAssertEqual(follow.label, "Follow on this TV", "Playing a recommendation must keep its creator unfollowed.")
     }
 
-    func testNativePlayerOverlayReturnsToTheSameVideo() throws {
+    func testNativePlayerOverlayReturnsToTheSameVideo() throws
+    {
         continueAfterFailure = false
         let app = try playSampleMovie()
         // AVKit presents the same custom overlay for its swipe gesture and its transport button.
@@ -314,17 +315,29 @@ final class ChannelRoomNavigationTests: XCTestCase {
         let first = tiles.element(boundBy: 0)
         XCTAssertTrue(focusWithRemote(first, in: app))
         XCTAssertTrue(panel.frame.contains(first.frame))
-        capture("Compact similar videos")
-        XCUIRemote.shared.press(.down)
-        XCTAssertTrue(tiles.element(boundBy: 1).hasFocus)
-        let width = app.frame.width
-        XCTAssertLessThan(panel.frame.width, width * 0.45)
-        let resize = panel.buttons["similar-resize"]
-        selectWithRemote(resize, in: app)
-        XCTAssertGreaterThan(panel.frame.width, width * 0.65)
-        selectWithRemote(resize, in: app)
-        XCTAssertLessThan(panel.frame.width, width * 0.45)
-        selectWithRemote(panel.buttons["player-panel-back"], in: app)
+        capture("Bottom similar videos")
+        XCUIRemote.shared.press(.right)
+        let second = tiles.element(boundBy: 1)
+        XCTAssertTrue(second.hasFocus)
+        XCTAssertGreaterThan(second.frame.midX, first.frame.midX)
+        XCTAssertEqual(first.frame.midY, second.frame.midY, accuracy: 40)
+        XCTAssertGreaterThan(panel.frame.width, app.frame.width * 0.85)
+        XCTAssertGreaterThan(panel.frame.minY, app.frame.height * 0.60)
+        XCTAssertGreaterThan(panel.frame.height, app.frame.height * 0.22)
+        let visible = Set(tiles.allElementsBoundByIndex.filter { panel.frame.contains($0.frame) }.map(\.identifier))
+        let focused = tiles.matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        for _ in 0..<10 where visible.contains(focused.identifier) { XCUIRemote.shared.press(.right) }
+        XCTAssertFalse(visible.contains(focused.identifier))
+        XCUIRemote.shared.press(.select, forDuration: 1.2)
+        let add = element(labeled: "Add to playlist", in: app)
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        XCUIRemote.shared.press(.select)
+        let playlist = app.buttons["Playback test"]
+        XCTAssertTrue(playlist.waitForExistence(timeout: 5))
+        XCTAssertTrue(playlist.isEnabled)
+        selectWithRemote(playlist, in: app)
+        XCTAssertTrue(playlist.waitForNonExistence(timeout: 5))
+        XCUIRemote.shared.press(.menu)
         XCTAssertTrue(panel.waitForNonExistence(timeout: 6))
         selectTransportAction("Description", in: app)
         XCTAssertTrue(app.staticTexts["player-panel-video-title"].waitForExistence(timeout: 6))

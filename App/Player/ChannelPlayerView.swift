@@ -137,6 +137,7 @@ private struct MiniPlayerButtonStyle: ButtonStyle {
 private struct NativePlayer: UIViewControllerRepresentable {
     @Environment(ChannelAccount.self) private var account
     @Environment(ChannelLibrary.self) private var library
+    @Environment(RoomPlaylistStore.self) private var playlists
     let session: RoomViewingSession
     let miniature: Bool
     let showingSheet: Bool
@@ -185,8 +186,8 @@ private struct NativePlayer: UIViewControllerRepresentable {
             let panel = RoomPlayerPanelView(panel: .similar, video: video, session: session, onClose: { [weak coordinator] in
                 coordinator?.similarOverlay?.dismiss(animated: true)
             })
-            let overlay = UIHostingController(rootView: panel.environment(account).environment(library).preferredColorScheme(.dark))
-            overlay.preferredContentSize = CGSize(width: 1920, height: 960)
+            let overlay = UIHostingController(rootView: panel.environment(account).environment(library).environment(playlists).preferredColorScheme(.dark))
+            overlay.preferredContentSize = CGSize(width: 1920, height: RoomPlayerPanelView.shelfHeight)
             overlay.view.backgroundColor = .clear
             overlay.title = "More like this"
             coordinator.similarOverlay = overlay

@@ -176,6 +176,7 @@ private struct RoomFeaturedVideo: View {
                     HStack(spacing: 16) {
                         RoomPlayButton("Watch", action: watch)
                             .focused(focus, equals: .featured)
+                            .videoPlaylistMenu(for: video)
                             .accessibilityIdentifier("featured-watch")
                         Button(action: options) { Image(systemName: "ellipsis").rotationEffect(.degrees(90)) }
                             .buttonStyle(FeatureOptionsStyle()).accessibilityLabel("More options")
@@ -261,18 +262,36 @@ struct RoomVideoTile: View {
     var position: Int? = nil
     var seconds: Int? = nil
     let action: () -> Void
-    @State private var addingToPlaylist = false
 
     var body: some View {
         Button(action: action) {
             RoomVideoTileLabel(video: video, portrait: portrait, position: position, seconds: seconds)
         }
         .buttonStyle(VideoButtonStyle()).focused(focus, equals: .video(video.id, in: discoveryShelfID))
-        .contextMenu {
-            Button { addingToPlaylist = true } label: { Label("Add to playlist", systemImage: "text.badge.plus") }
-        }
-        .sheet(isPresented: $addingToPlaylist) { RoomAddToPlaylistView(video: video, durationSeconds: seconds ?? video.durationSeconds) }
+        .videoPlaylistMenu(for: video, seconds: seconds)
         .accessibilityIdentifier((discoveryShelfID.map { "discovery-" + $0 + "-" } ?? "video-") + video.id)
+    }
+}
+
+extension View {
+    func videoPlaylistMenu(for video: ChannelVideo, seconds: Int? = nil) -> some View {
+        modifier(VideoPlaylistMenu(video: video, seconds: seconds))
+    }
+}
+
+private struct VideoPlaylistMenu: ViewModifier {
+    let video: ChannelVideo
+    let seconds: Int?
+    @State private var adding = false
+
+    func body(content: Content) -> some View {
+        content
+            .contextMenu {
+                Button { adding = true } label: { Label("Add to playlist", systemImage: "text.badge.plus") }
+            }
+            .sheet(isPresented: $adding) {
+                RoomAddToPlaylistView(video: video, durationSeconds: seconds ?? video.durationSeconds)
+            }
     }
 }
 
