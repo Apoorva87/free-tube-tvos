@@ -1,6 +1,6 @@
 # Free Tube for Apple TV
 
-Free Tube is a native tvOS app for watching public YouTube videos and browsing the channels you follow. Home brings together recent uploads and two discovery rows. You can open a recommendation without subscribing, watch at 1.5× or 2×, or keep the current video playing in the corner while you look for another. The Apple TV runs the app on its own.
+Free Tube is a native tvOS app for watching public YouTube videos and browsing the channels you follow. Home brings together recent uploads and two discovery rows. You can open a recommendation without subscribing, watch at 1.5× or 2×, or keep the current video playing in the corner while you look for another. Search, playback, and custom playlists run on the TV. The optional **Ask AI** feature connects to a paired computer on your home network.
 
 **[Try the interactive walkthrough →](https://apoorva87.github.io/free-tube-tvos/)**
 
@@ -32,6 +32,18 @@ The TV stores manually entered client settings and the Google refresh token in i
 | Search while watching | Choose **Watch while browsing** in the player, then open **Search**. The in-app mini-player uses one-third of the screen width. The tvOS keyboard covers the picture temporarily during text entry. |
 | Go back to full screen | Choose **Expand video** in the mini-player or sidebar. Playback keeps its current position and rate. **Close video** stops it. |
 
+## Custom playlists
+
+Open **Playlists → New playlist**. Hold Select on a video tile and choose **Add to playlist**, or use **Add to playlist** in the player. Open a saved list to play it in order. **Edit playlist** lets you rename it, move videos up or down, or remove them. Playlists are shared by profiles on this installation of Free Tube and are saved on the TV. You can manage them while signed out or while your helper is asleep.
+
+## Ask AI
+
+Pair a computer running the dedicated Codex helper under **Search → Ask AI → Connect or check helper**. Both devices need to be on the same local network. The helper signs in through its own Codex session. The session uses the configured provider for inference and receives the prompt and selected video metadata or caption excerpts. Google credentials stay on the TV. There is no automatic provider or paid API fallback. [Set up the helper](Helper/README.md)
+
+- **Build a playlist.** Try “Build a 45-minute playlist that teaches KV cache with visual explainers and no repeats.” The TV searches its video catalog, verifies the proposed IDs and uses known durations to fit the draft within the requested time. Review the actual total, reorder or remove videos, add alternatives, and save.
+- **Ask during playback.** Open the player controls and choose **Ask AI**. **Summarize this** shows takeaways alongside the timestamp and text of the supporting caption. Enter a topic such as “where they explain memory bandwidth” and choose **Find timestamp** to preview a cue and confirm the jump. **Find a good follow-up** searches for other videos.
+- **Available captions.** The helper supports timestamped WebVTT files you have permission to use for a specific video. Import the track on the computer using the helper's instructions. If a track is missing, the TV offers related search. For long tracks it shows when an answer uses sampled excerpts.
+
 ## How it works
 
 - **Catalog.** The read-only Google connection imports subscriptions. Home uses channel topics and recent uploads to find other creators, filters out followed channels and divides distinct creators between the two discovery rows. Results depend on the available public catalog.
@@ -42,6 +54,6 @@ The TV stores manually entered client settings and the Google refresh token in i
 
 The app lives in [App](App). The checked-in Xcode project is ready to open. [project.yml](project.yml) is its XcodeGen specification. The player’s stream-selection and observation logic are adapted from [SmartTubeIOS](https://github.com/milika/SmartTubeIOS/tree/6bd85d39ab9458b3dc2582597dc7ed10c2fd8dce). Its native HLS negotiation follows the AuTube approach.
 
-Run the stream-selection fixtures on a Mac with `swift test --package-path Vendor/SmartTubeIOS`. In Xcode, **Product → Test** runs discovery, playback and remote-navigation checks. Live playback needs internet access. Account-dependent UI checks use the test device’s catalog.
+Run the stream-selection fixtures on a Mac with `swift test --package-path Vendor/SmartTubeIOS`. In Xcode, **Product → Test** runs playlist, assistant validation, helper connection, discovery, playback and remote-navigation checks. Run the helper tests with `python3 -m unittest discover -s Helper`. Live playback needs internet access. Account-dependent UI checks use the test device’s catalog.
 
 The source is distributed under [GPL-3.0](LICENSE). The walkthrough uses an illustrative library and separately credited [NASA photographs](docs/credits.md). Free Tube is an independent project.

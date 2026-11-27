@@ -6,6 +6,7 @@ struct RoomSearchView: View {
     let open: (RoomChannel) -> Void
     let play: (ChannelVideo, [ChannelVideo]) -> Void
     @State private var query = ""
+    @State private var showAsk = false
     @State private var submitted = ""
     @State private var revision = UUID()
     @State private var channels = [RoomChannel]()
@@ -23,6 +24,8 @@ struct RoomSearchView: View {
                         .autocorrectionDisabled().textInputAutocapitalization(.never)
                         .submitLabel(.search).onSubmit { submit() }
                     Button("Search") { submit() }.disabled(trimmed.isEmpty)
+                    Button { showAsk = true } label: { Label("Ask AI", systemImage: "sparkles") }
+                        .accessibilityIdentifier("search-ask-ai")
                 }
                 if isLoading { RoomLoading(text: "Searching…") }
                 if let error { RoomNotice(message: error) }
@@ -44,6 +47,7 @@ struct RoomSearchView: View {
             }.padding(14)
         }
         .scrollClipDisabled()
+        .sheet(isPresented: $showAsk) { RoomAskView(initialPrompt: trimmed) }
         .task(id: revision) { if !submitted.isEmpty { await search() } }
     }
 

@@ -2,6 +2,32 @@ import XCTest
 
 @MainActor
 final class ChannelRoomNavigationTests: XCTestCase {
+    func testPlaylistEditorAndAskAIAreReachableWithTheRemote() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let remote = XCUIRemote.shared
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+        remote.press(.menu)
+        let playlists = app.buttons["nav-playlists"]
+        XCTAssertTrue(playlists.waitForExistence(timeout: 8))
+        selectWithRemote(playlists, in: app)
+        let create = app.buttons["playlist-new"]
+        XCTAssertTrue(create.waitForExistence(timeout: 6))
+        selectWithRemote(create, in: app)
+        XCTAssertTrue(app.textFields["playlist-name"].waitForExistence(timeout: 6))
+        selectWithRemote(app.buttons["Cancel"], in: app)
+        XCTAssertTrue(create.waitForExistence(timeout: 6))
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-search"], in: app)
+        let ask = app.buttons["search-ask-ai"]
+        XCTAssertTrue(ask.waitForExistence(timeout: 6))
+        selectWithRemote(ask, in: app)
+        XCTAssertTrue(app.buttons["Build playlist"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["Build playlist"].isEnabled)
+        XCTAssertTrue(app.buttons["Done"].exists)
+    }
+
     func testBackOpensNavigationAndRightRestoresTheTile() throws {
         let app = XCUIApplication()
         app.launch()

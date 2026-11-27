@@ -8,6 +8,7 @@ struct ChannelVideo: Identifiable, Hashable, Codable, Sendable {
     let thumbnail: URL?
     var publishedAt: Date = .distantPast
     var coverThumbnail: URL?
+    var durationSeconds: Int? = nil
 
     static func chronological(_ videos: [Self], followed: Set<String>) -> [Self] {
         var seen = Set<String>()
@@ -358,7 +359,12 @@ struct ChannelCatalog: Sendable {
                           let endpoint = navigation["browseEndpoint"] as? Object, let channelID = endpoint["browseId"] as? String,
                           ChannelAddress.isID(channelID) {
                     page.videos.append(ChannelVideo(id: id, title: name, channelID: channelID,
-                        channelTitle: channelName, thumbnail: thumbnail(video)))
+                        channelTitle: channelName, thumbnail: thumbnail(video),
+                        durationSeconds: RoomAIValidation.seconds(title(video["lengthText"] as? Object) ??
+                            (video["thumbnailOverlays"] as? [Object])?.compactMap { overlay in
+                                let status = overlay["thumbnailOverlayTimeStatusRenderer"] as? Object
+                                return title(status?["text"] as? Object)
+                            }.first)))
                 }
             }
         }

@@ -218,12 +218,17 @@ struct RoomVideoTile: View {
     var discoveryShelfID: String? = nil
     var portrait = false
     let action: () -> Void
+    @State private var addingToPlaylist = false
 
     var body: some View {
         Button(action: action) {
             RoomVideoTileLabel(video: video, portrait: portrait)
         }
         .buttonStyle(VideoButtonStyle()).focused(focus, equals: .video(video.id))
+        .contextMenu {
+            Button { addingToPlaylist = true } label: { Label("Add to playlist", systemImage: "text.badge.plus") }
+        }
+        .sheet(isPresented: $addingToPlaylist) { RoomAddToPlaylistView(video: video) }
         .accessibilityIdentifier((discoveryShelfID.map { "discovery-" + $0 + "-" } ?? "video-") + video.id)
     }
 }

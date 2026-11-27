@@ -1,18 +1,19 @@
 import SwiftUI
 
 enum RoomSection: String, CaseIterable {
-    case home = "Home", channels = "Channels", search = "Search"
+    case home = "Home", channels = "Channels", search = "Search", playlists = "Playlists"
     var icon: String {
         switch self {
         case .home: "house.fill"
         case .channels: "rectangle.stack.fill"
         case .search: "magnifyingglass"
+        case .playlists: "list.and.film"
         }
     }
 }
 
 enum RoomBrowseFocus: Hashable {
-    case menu, featured, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
+    case menu, featured, newPlaylist, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
 }
 
 private struct RoomFocusKey: EnvironmentKey {
@@ -56,6 +57,7 @@ private struct RoomShell: View {
     @State private var menuOpen = false
     @State private var lastTile: RoomBrowseFocus?
     @State private var featureOptions = false
+    @State private var savingVideo: ChannelVideo?
     @FocusState private var focus: RoomBrowseFocus?
 
     var body: some View {
@@ -79,6 +81,8 @@ private struct RoomShell: View {
                         case .channels:
                             RoomSubscriptionsView(library: library, focus: $focus, play: play, openChannel: { channel = $0 },
                                                   findChannels: { section = .search })
+                        case .playlists:
+                            RoomPlaylistsView(focus: $focus, play: onPlay)
                         case .search:
                             RoomSearchView(account: account, library: library, open: { channel = $0 }, play: play)
                         }
@@ -99,7 +103,12 @@ private struct RoomShell: View {
             .defaultFocus($focus, .featured)
             .onChange(of: viewing.presentation) { previous, current in
                 if previous == .full, current != .full, !menuOpen {
-                    let first: RoomBrowseFocus = section == .home ? .featured : (section == .channels ? .subscriptionFilter(nil) : .menu)
+                    let first: RoomBrowseFocus = switch section {
+                    case .home: .featured
+                    case .channels: .subscriptionFilter(nil)
+                    case .playlists: .newPlaylist
+                    case .search: .menu
+                    }
                     closeMenu(to: lastTile ?? first)
                 }
             }
@@ -127,7 +136,13 @@ private struct RoomShell: View {
             ChannelAccountView(account: account, profile: library.profile, inventory: library.subscriptionInventory, startsSwitch: startsProfileSwitch)
                 .onAppear { startsProfileSwitch = false }
         }
+        .sheet(item: $savingVideo) { video in
+            RoomAddToPlaylistView(video: video).environment(\.roomVideoFacts, library.videoFacts)
+        }
         .confirmationDialog("Featured video", isPresented: $featureOptions) {
+            if let feature = library.videos.first {
+                Button("Add to playlist") { savingVideo = feature }
+            }
             if let feature = library.videos.first, let owner = library.channels.first(where: { $0.id == feature.channelID }) {
                 Button("View channel") { channel = owner }
             }
@@ -150,7 +165,7 @@ private struct RoomShell: View {
             }
             .buttonStyle(RailButtonStyle(selected: false)).focused($focus, equals: .account)
             .accessibilityIdentifier("account").padding(.bottom, 18)
-            ForEach([RoomSection.search, .home, .channels], id: \.self) { item in
+            ForEach([RoomSection.search, .home, .channels, .playlists], id: \.self) { item in
                 Button { choose(item) } label: {
                     Label(item == .channels ? "Subscriptions" : item.rawValue, systemImage: item.icon)
                 }
@@ -197,6 +212,7 @@ private struct RoomShell: View {
         let first: RoomBrowseFocus? = switch item {
         case .home: library.videos.isEmpty ? nil : .featured
         case .channels: .subscriptionFilter(nil)
+        case .playlists: .newPlaylist
         case .search: nil
         }
         closeMenu(to: retained ?? first ?? .menu)
@@ -277,7 +293,7 @@ private struct RoomBrowseRail: View {
         }
         .onChange(of: focus.wrappedValue) { _, target in
             switch target {
-            case .featured, .video, .channel, .subscriptionFilter: lastTile = target
+            case .featured, .newPlaylist, .video, .channel, .subscriptionFilter: lastTile = target
             default: break
             }
         }
@@ -294,7 +310,7 @@ private struct RoomBrowseRail: View {
             VStack(spacing: 39) {
                 RoomAvatar(channel: profile, symbol: "person.fill", size: 50)
                     .padding(.bottom, 22)
-                ForEach([RoomSection.search, .home, .channels], id: \.self) { item in
+                ForEach([RoomSection.search, .home, .channels, .playlists], id: \.self) { item in
                     Image(systemName: item.icon).font(.system(size: 29, weight: .semibold))
                         .foregroundStyle(item == section ? .white : RoomPalette.muted)
                 }
