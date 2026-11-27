@@ -46,13 +46,15 @@ extension ChannelCatalog {
                    owner != channelID { return nil }
             }
             guard seen.insert(id).inserted else { return nil }
+            let labels = ChannelVideo.listingLabels(rows)
             let age = parts.compactMap { $0["accessibilityLabel"] as? String }.compactMap { approximateDate($0, now: now) }.first
             // The tab orders items newest-first even when several display the same coarse age.
             let thumbnail = object(video, "contentImage", "thumbnailViewModel")
             let duration = publicThumbnailBadges(thumbnail).compactMap { RoomVideoFacts.seconds(from: $0["text"] as? String) }.first
             return ChannelVideo(id: id, title: name, channelID: channelID, channelTitle: title,
                                 thumbnail: image(object(thumbnail, "image")?["sources"]), publishedAt: age ?? .distantPast,
-                                durationSeconds: duration, uploadPosition: index)
+                                durationSeconds: duration, uploadPosition: index,
+                                publicationLabel: labels.publication, viewLabel: labels.views)
         }
         return (channel, CatalogPage(videos: videos))
     }

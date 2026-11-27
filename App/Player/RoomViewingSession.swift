@@ -11,6 +11,9 @@ final class RoomViewingSession {
     @ObservationIgnored var onVideoStarted: ((ChannelVideo) -> Void)?
     private var queue: [ChannelVideo] = []
     private var index = 0
+    private var quickCount = 0
+    private(set) var queueNotice: String?
+    @ObservationIgnored private var noticeTimer: Task<Void, Never>?
     @ObservationIgnored private var loading: Task<Void, Never>?
 
     var video: ChannelVideo? { queue.indices.contains(index) ? queue[index] : nil }
@@ -19,15 +22,46 @@ final class RoomViewingSession {
     func open(_ video: ChannelVideo, in queue: [ChannelVideo]) {
         guard let position = queue.firstIndex(where: { $0.id == video.id && $0.channelID == video.channelID }) else { return }
         if presentation == .mini, self.video?.id == video.id, self.video?.channelID == video.channelID {
-            self.queue = queue
-            index = position
             expand()
             return
         }
+        quickCount = 0
         self.queue = queue
         index = position
         presentation = .full
         load()
+    }
+
+    func queueFromMini(_ pick: ChannelVideo, seconds: Int?, store: RoomPlaylistStore) {
+        guard presentation == .mini else { return }
+        let start = index + 1
+        let insertion = start + quickCount
+        if video?.id == pick.id {
+            showNotice("Already playing")
+            return
+        }
+        if queue[start..<insertion].contains(where: { $0.id == pick.id }) {
+            showNotice("Already queued · " + pick.title)
+            return
+        }
+        do {
+            try store.saveQuickPick(pick, seconds: seconds)
+            let remainder = queue[insertion...].filter { $0.id != pick.id }
+            queue.replaceSubrange(insertion..., with: [pick] + remainder)
+            quickCount += 1
+            showNotice("Queued · " + pick.title)
+        } catch {
+            showNotice(error.localizedDescription)
+        }
+    }
+
+    private func showNotice(_ text: String) {
+        noticeTimer?.cancel()
+        queueNotice = text
+        noticeTimer = Task {
+            try? await Task.sleep(for: .seconds(3))
+            if !Task.isCancelled { queueNotice = nil }
+        }
     }
 
     func minimize() {
@@ -50,6 +84,7 @@ final class RoomViewingSession {
 
     func advance() {
         guard next != nil else { return }
+        if quickCount > 0 { quickCount -= 1 }
         index += 1
         load()
     }
@@ -61,7 +96,12 @@ final class RoomViewingSession {
         loading = Task { @MainActor [onVideoStarted] in
             guard !Task.isCancelled else { return }
             await playback.play(video) { onVideoStarted?(video) }
-            guard !Task.isCancelled, playback.phase == .finished else { return }
+            guard !Task.isCancelled else { return }
+            if case .failed = playback.phase, presentation == .mini, quickCount > 0 {
+                advance()
+                return
+            }
+            guard playback.phase == .finished else { return }
             if next != nil { advance() }
             else if presentation == .mini { close() }
         }
@@ -72,6 +112,9 @@ final class RoomViewingSession {
         loading = nil
         playback.stop()
         presentation = .closed
+        noticeTimer?.cancel()
+        queueNotice = nil
+        quickCount = 0
         queue.removeAll()
         index = 0
     }

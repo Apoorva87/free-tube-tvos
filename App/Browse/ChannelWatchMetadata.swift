@@ -102,9 +102,11 @@ extension ChannelCatalog {
         let thumbnail = video.object("contentImage", "thumbnailViewModel")
         let badges = publicThumbnailBadges(thumbnail)
         guard !badges.contains(where: { ($0["badgeStyle"] as? String) == "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE" }) else { return nil }
+        let labels = ChannelVideo.listingLabels(rows)
         return ChannelVideo(id: id, title: title, channelID: channelID, channelTitle: name,
                             thumbnail: watchImage(thumbnail?.object("image")?["sources"]),
-                            durationSeconds: badges.compactMap { RoomVideoFacts.seconds(from: $0["text"] as? String) }.first)
+                            durationSeconds: badges.compactMap { RoomVideoFacts.seconds(from: $0["text"] as? String) }.first,
+                            publicationLabel: labels.publication, viewLabel: labels.views)
     }
 
     private static func relatedCompact(_ video: WatchObject) -> ChannelVideo? {
@@ -117,7 +119,9 @@ extension ChannelCatalog {
         guard !overlays.contains(where: { $0["style"] as? String == "LIVE" }) else { return nil }
         let duration = video.object("lengthText")?.watchText ?? overlays.first?.object("text")?.watchText
         return ChannelVideo(id: id, title: title, channelID: channelID, channelTitle: name,
-                            thumbnail: watchImage(video.object("thumbnail")?["thumbnails"]), durationSeconds: RoomVideoFacts.seconds(from: duration))
+                            thumbnail: watchImage(video.object("thumbnail")?["thumbnails"]), durationSeconds: RoomVideoFacts.seconds(from: duration),
+                            publicationLabel: video.object("publishedTimeText")?.watchText,
+                            viewLabel: (video.object("shortViewCountText") ?? video.object("viewCountText"))?.watchText)
     }
 
     private static func watchImage(_ images: Any?) -> URL? {

@@ -167,6 +167,7 @@ final class RoomDiscoveryTests: XCTestCase {
         let id = "UC0000000000000000000000"
         let entry: [String: Any] = ["videoWithContextRenderer": [
             "videoId": "one", "headline": ["simpleText": "Ada's \"machines\""],
+            "publishedTimeText": ["simpleText": "2 weeks ago"], "shortViewCountText": ["simpleText": "12K views"],
             "shortBylineText": ["runs": [["text": "Ada", "navigationEndpoint": ["browseEndpoint": ["browseId": id]]]]]
         ]]
         let root = ["contents": ["sectionListRenderer": ["contents": [["itemSectionRenderer": ["contents": [entry]]]]]]]
@@ -178,6 +179,8 @@ final class RoomDiscoveryTests: XCTestCase {
         let html = "<script>var ytInitialData = '" + js + "';</script>"
         let result = try ChannelCatalog.publicResults(from: Data(html.utf8)).videos
         XCTAssertEqual(result.map(\.channelID), [id])
+        XCTAssertEqual(result.first?.publicationLabel, "2 weeks ago")
+        XCTAssertEqual(result.first?.viewLabel, "12K views")
         XCTAssertEqual(result.first?.title, "Ada's \"machines\"")
     }
 

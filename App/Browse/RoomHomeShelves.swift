@@ -254,6 +254,36 @@ private struct RoomVideoMetadata: View {
     }
 }
 
+struct RoomTileByline: View {
+    let video: ChannelVideo
+    var compact = false
+    @Environment(ChannelLibrary.self) private var library
+    @Environment(ChannelAccount.self) private var account
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        let facts = library.videoFacts[video.id]
+        let publication = facts?.publishedAt?.formatted(date: .abbreviated, time: .omitted)
+            ?? video.publicationLabel
+            ?? (video.uploadPosition == nil && video.publishedAt != .distantPast
+                ? video.publishedAt.formatted(date: .abbreviated, time: .omitted) : nil)
+        let views = facts?.views.map(ChannelVideo.formatViews) ?? video.viewLabel
+        VStack(alignment: .leading, spacing: 1) {
+            Text(video.channelTitle).font(typeSize.isAccessibilitySize ? .caption : .system(size: compact ? 17 : 18))
+            if publication != nil || views != nil {
+                HStack(spacing: 4) {
+                    if let publication { Text(publication) }
+                    Spacer(minLength: 4)
+                    if let views { Text(views) }
+                }
+                .font(typeSize.isAccessibilitySize ? .caption : .system(size: compact ? 16 : 17))
+            }
+        }
+        .lineLimit(1).foregroundStyle(RoomPalette.muted)
+        .task(id: video.id) { library.requestTileFacts(for: video.id, account: account) }
+    }
+}
+
 struct RoomVideoTile: View {
     let video: ChannelVideo
     let focus: FocusState<RoomBrowseFocus?>.Binding
@@ -282,16 +312,36 @@ extension View {
 private struct VideoPlaylistMenu: ViewModifier {
     let video: ChannelVideo
     let seconds: Int?
+    @Environment(ChannelLibrary.self) private var library
+    @Environment(RoomViewingSession.self) private var viewing
+    @Environment(RoomPlaylistStore.self) private var playlists
     @State private var adding = false
 
     func body(content: Content) -> some View {
-        content
-            .contextMenu {
-                Button { adding = true } label: { Label("Add to playlist", systemImage: "text.badge.plus") }
-            }
-            .sheet(isPresented: $adding) {
-                RoomAddToPlaylistView(video: video, durationSeconds: seconds ?? video.durationSeconds)
-            }
+        if viewing.presentation == .mini {
+            content
+                .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in
+                    viewing.queueFromMini(video, seconds: seconds, store: playlists)
+                })
+                .accessibilityAction(named: "Queue in Quick Playlist") {
+                    viewing.queueFromMini(video, seconds: seconds, store: playlists)
+                }
+        } else {
+            content
+                .contextMenu {
+                    Button { adding = true } label: { Label("Add to playlist", systemImage: "text.badge.plus") }
+                    if ChannelAddress.isID(video.channelID), !library.followed.contains(video.channelID) {
+                        Button {
+                            guard !library.followed.contains(video.channelID) else { return }
+                            library.toggle(RoomChannel(id: video.channelID, title: video.channelTitle), preview: [video])
+                            library.requestRefresh()
+                        } label: { Label("Follow channel on this TV", systemImage: "person.badge.plus") }
+                    }
+                }
+                .sheet(isPresented: $adding) {
+                    RoomAddToPlaylistView(video: video, durationSeconds: seconds ?? video.durationSeconds)
+                }
+        }
     }
 }
 
@@ -313,8 +363,7 @@ struct RoomVideoTileLabel: View {
             Text(video.title).font(typeSize.isAccessibilitySize ? .headline : .system(size: 26, weight: .semibold))
                 .foregroundStyle(selected ? .white : Color(white: 0.90))
                 .lineLimit(2, reservesSpace: true).multilineTextAlignment(.leading)
-            Text(video.channelTitle).lineLimit(1).foregroundStyle(RoomPalette.muted)
-            RoomVideoMetadata(video: video).foregroundStyle(RoomPalette.muted)
+            RoomTileByline(video: video)
         }
         .font(typeSize.isAccessibilitySize ? .caption : .system(size: 21))
         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 5)

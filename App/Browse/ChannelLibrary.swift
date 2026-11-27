@@ -96,6 +96,28 @@ final class ChannelLibrary {
         if let data = try? JSONEncoder().encode(local) { defaults.set(data, forKey: Self.localKey) }
     }
 
+    @ObservationIgnored private var pendingFacts = Set<String>()
+    @ObservationIgnored private var factsTask: Task<Void, Never>?
+
+    func requestTileFacts(for id: String, account: ChannelAccount) {
+        guard account.isSignedIn, videoFacts[id] == nil else { return }
+        pendingFacts.insert(id)
+        guard factsTask == nil else { return }
+        let session = account.sessionID
+        factsTask = Task { @MainActor in
+            defer { factsTask = nil }
+            try? await Task.sleep(for: .milliseconds(150))
+            while !pendingFacts.isEmpty, account.sessionID == session {
+                let batch = Array(pendingFacts.prefix(50))
+                pendingFacts.subtract(batch)
+                if let token = try? await account.accessToken(),
+                   let result = try? await api.facts(for: batch, token: token), account.sessionID == session {
+                    videoFacts.merge(result) { _, latest in latest }
+                }
+            }
+        }
+    }
+
     func requestRefresh() { refreshID = UUID() }
 
     func refresh(account: ChannelAccount) async {
@@ -226,8 +248,11 @@ final class ChannelLibrary {
         let recommended = discoverShelves.filter { $0.id == "for-you" || $0.id == "from-subscriptions" }
         let featuredRows = discoveries + creatorsToExplore + Array(videos.prefix(15)) + recommended.flatMap(\.videos)
         let ordered = featuredRows + topicShelves.flatMap(\.videos) + Array(videos.dropFirst(15))
-        let available = Set(ordered.map(\.id))
-        videoFacts = videoFacts.filter { available.contains($0.key) }
+        // Search and player tiles also share this cache. Retain their facts on ordinary feed refreshes.
+        if videoFacts.count > 2_000 {
+            let available = Set(ordered.map(\.id))
+            videoFacts = videoFacts.filter { available.contains($0.key) }
+        }
         var seen = Set(videoFacts.keys)
         let ids = ordered.compactMap { seen.insert($0.id).inserted ? $0.id : nil }
         // Enrich the visible shelves in one batch, independent of the uploaded-video and search results.

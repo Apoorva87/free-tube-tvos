@@ -78,7 +78,7 @@ struct ChannelPlayerView: View {
             }
             if mini {
                 HStack(spacing: 12) {
-                    Text(session.video?.title ?? "").font(.system(size: 19, weight: .semibold))
+                    Text(session.queueNotice ?? session.video?.title ?? "").font(.system(size: 19, weight: .semibold))
                         .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     Button(action: session.expand) { Image(systemName: "arrow.up.left.and.arrow.down.right") }
                         .accessibilityLabel("Expand video").accessibilityIdentifier("mini-expand")
@@ -186,7 +186,7 @@ private struct NativePlayer: UIViewControllerRepresentable {
             let panel = RoomPlayerPanelView(panel: .similar, video: video, session: session, onClose: { [weak coordinator] in
                 coordinator?.similarOverlay?.dismiss(animated: true)
             })
-            let overlay = UIHostingController(rootView: panel.environment(account).environment(library).environment(playlists).preferredColorScheme(.dark))
+            let overlay = UIHostingController(rootView: panel.environment(account).environment(library).environment(playlists).environment(session).preferredColorScheme(.dark))
             overlay.preferredContentSize = CGSize(width: 1920, height: RoomPlayerPanelView.shelfHeight)
             overlay.view.backgroundColor = .clear
             overlay.title = "More like this"

@@ -108,6 +108,44 @@ final class freeTubeNavigationTests: XCTestCase {
         XCTAssertFalse(app.alerts.firstMatch.exists)
     }
 
+    func testSearchVideoSelectStartsPlaybackAndHoldOffersActions() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-ChannelRoom.LocalFollows.1", "<5b5d>"]
+        app.launch()
+        let remote = XCUIRemote.shared
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-search"], in: app)
+        selectWithRemote(app.textFields.firstMatch, in: app)
+        app.typeText("Big Buck Bunny Blender\n")
+        let tile = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'video-'")).firstMatch
+        XCTAssertTrue(tile.waitForExistence(timeout: 40))
+        remote.press(.menu)
+        XCTAssertTrue(focusWithRemote(tile, in: app))
+        remote.press(.select, forDuration: 1.2)
+        XCTAssertTrue(element(labeled: "Add to playlist", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(element(labeled: "Follow channel on this TV", in: app).exists)
+        remote.press(.menu)
+        selectWithRemote(tile, in: app)
+        let player = app.descendants(matching: .any).matching(NSPredicate(format: "identifier IN %@", ["native-playback", "playing-title"]))
+        XCTAssertTrue(player.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+    }
+
+    func testMiniPlayerHoldQueuesVideoTile() throws {
+        continueAfterFailure = false
+        let app = try playSampleMovie(includingQueuePick: true)
+        selectTransportAction("Watch while browsing", in: app)
+        let remote = XCUIRemote.shared
+        XCTAssertTrue(app.buttons["mini-expand"].waitForExistence(timeout: 5))
+        let tile = app.buttons["video-eRsGyueVLvQ"]
+        XCTAssertTrue(tile.waitForExistence(timeout: 40))
+        XCTAssertTrue(focusWithRemote(tile, in: app))
+        remote.press(.select, forDuration: 1.2)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Queued ·'")).firstMatch.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["mini-expand"].exists)
+    }
+
     func testProfileDownReachesHomeAndHistory() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -746,7 +784,7 @@ final class freeTubeNavigationTests: XCTestCase {
         capture("freeTube actual handoff")
     }
 
-    private func playSampleMovie(requiringEmptyGuestLibrary: Bool = false) throws -> XCUIApplication {
+    private func playSampleMovie(requiringEmptyGuestLibrary: Bool = false, includingQueuePick: Bool = false) throws -> XCUIApplication {
         #if !targetEnvironment(simulator)
         try XCTSkipIf(requiringEmptyGuestLibrary, "Local follow checks use an isolated guest simulator.")
         #endif
@@ -755,8 +793,13 @@ final class freeTubeNavigationTests: XCTestCase {
         let videoID = "aqz-KE-bpKQ"
         let video: [String: Any] = ["id": videoID, "title": "Big Buck Bunny", "channelID": "UCSMOQeBJ2RAnuFungnQOxLg",
                                     "channelTitle": "Blender", "publishedAt": Date()]
+        var samples = [video]
+        if includingQueuePick {
+            samples.append(["id": "eRsGyueVLvQ", "title": "Sintel", "channelID": "UCSMOQeBJ2RAnuFungnQOxLg",
+                            "channelTitle": "Blender", "publishedAt": Date()])
+        }
         let archive: [String: Any] = ["version": 1, "playlists": [
-            ["id": id.uuidString, "title": "Playback test", "videos": [video]]
+            ["id": id.uuidString, "title": "Playback test", "videos": samples]
         ]]
         let data = try PropertyListSerialization.data(fromPropertyList: archive, format: .binary, options: 0)
         app.launchArguments = ["-room.playlists.v1", "<" + data.map { String(format: "%02x", $0) }.joined() + ">"]

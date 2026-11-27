@@ -72,7 +72,6 @@ private struct RoomShell: View {
     @Binding var accountOpen: Bool
     @Binding var startsProfileSwitch: Bool
     @State private var channel: RoomChannel?
-    @State private var pendingVideo: ChannelVideo?
     @State private var menuOpen = false
     @State private var lastTile: RoomBrowseFocus?
     @State private var featureOptions = false
@@ -158,7 +157,7 @@ private struct RoomShell: View {
                         case .history:
                             RoomWatchHistoryView(store: history, focus: $focus, play: onPlay, browse: { choose(.home) })
                         case .search:
-                            RoomSearchView(account: account, library: library, open: { channel = $0 }, play: play)
+                            RoomSearchView(account: account, library: library, open: { channel = $0 }, play: onPlay)
                         }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
@@ -183,22 +182,8 @@ private struct RoomShell: View {
             .toolbar(.hidden, for: .navigationBar)
             .background(RoomPalette.background.ignoresSafeArea())
             .navigationDestination(item: $channel) { selected in
-                RoomChannelView(account: account, library: library, channel: selected, play: play)
+                RoomChannelView(account: account, library: library, channel: selected, play: onPlay)
             }
-        }
-        .alert("Follow this channel to watch?", isPresented: Binding(
-            get: { pendingVideo != nil },
-            set: { if !$0 { pendingVideo = nil } }
-        ), presenting: pendingVideo) { video in
-            Button("Follow and play") {
-                let owner = RoomChannel(id: video.channelID, title: video.channelTitle)
-                if !library.followed.contains(owner.id) { library.toggle(owner, preview: []) }
-                library.requestRefresh()
-                play(video, library.videos)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { video in
-            Text("\(video.channelTitle) will appear in Home on this Apple TV.")
         }
         .sheet(isPresented: $accountOpen) {
             ChannelAccountView(account: account, profile: library.profile, inventory: library.subscriptionInventory, startsSwitch: startsProfileSwitch)
@@ -364,10 +349,6 @@ private struct RoomShell: View {
 
     private func play(_ video: ChannelVideo, _ context: [ChannelVideo]) {
         let followed = library.followed
-        guard followed.contains(video.channelID) else {
-            pendingVideo = video
-            return
-        }
         // Public search reports approximate dates. Start that selection immediately and
         // continue with dated uploads from the user's followed feed.
         if video.publishedAt == .distantPast {

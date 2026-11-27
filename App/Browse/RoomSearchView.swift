@@ -35,7 +35,7 @@ struct RoomSearchView: View {
                 }
                 if !videos.isEmpty {
                     Text("Videos").font(.title2.bold())
-                    RoomVideoGrid(videos: videos) { video in play(video, library.videos) }
+                    RoomVideoGrid(videos: videos) { video in play(video, videos) }
                 }
                 if attempted && channels.isEmpty && videos.isEmpty && error == nil && !isLoading {
                     Text("No results for “\(submitted)”.")
@@ -113,7 +113,6 @@ struct RoomChannelView: View {
     let play: (ChannelVideo, [ChannelVideo]) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var detailed: RoomChannel?
-    @State private var pendingVideo: ChannelVideo?
     @State private var showingSubscription = false
     @State private var videos = [ChannelVideo]()
     @State private var next: String?
@@ -167,9 +166,6 @@ struct RoomChannelView: View {
                     }
                 }
                 RoomShelfTitle(title: "Recent uploads")
-                if !followed && returnToPlayer == nil {
-                    Text("Follow this channel to play its uploads.").font(.headline).foregroundStyle(RoomPalette.muted)
-                }
                 if isLoading { RoomLoading(text: "Loading uploads…").accessibilityIdentifier("player-panel-loading") }
                 if let error {
                     RoomNotice(message: error).accessibilityIdentifier("player-panel-error")
@@ -180,8 +176,7 @@ struct RoomChannelView: View {
                         .accessibilityIdentifier("player-panel-empty")
                 }
                 RoomVideoGrid(videos: videos) { video in
-                    if followed || returnToPlayer != nil { play(video, videos) }
-                    else { pendingVideo = video }
+                    play(video, videos)
                 }
                 if next != nil && !isLoading && error == nil {
                     Button("More uploads") { revision = UUID() }
@@ -215,18 +210,6 @@ struct RoomChannelView: View {
                 .accessibilityIdentifier("player-creator-subscribe-sheet")
                 .onExitCommand { showingSubscription = false }
             }
-        }
-        .alert("Follow this channel to watch?", isPresented: Binding(
-            get: { pendingVideo != nil },
-            set: { if !$0 { pendingVideo = nil } }
-        ), presenting: pendingVideo) { video in
-            Button("Follow and play") {
-                if !followed { library.toggle(detailed ?? channel, preview: videos) }
-                play(video, videos)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("\(channel.title) will appear in Home on this Apple TV.")
         }
         .task(id: revision) { await load() }
     }

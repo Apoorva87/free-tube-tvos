@@ -10,6 +10,19 @@ struct ChannelVideo: Identifiable, Hashable, Codable, Sendable {
     var coverThumbnail: URL?
     var durationSeconds: Int? = nil
     var uploadPosition: Int? = nil
+    var publicationLabel: String?
+    var viewLabel: String?
+
+    static func formatViews(_ count: UInt64) -> String {
+        count.formatted(.number.notation(.compactName)) + (count == 1 ? " view" : " views")
+    }
+
+    static func listingLabels(_ rows: [[String: Any]]) -> (publication: String?, views: String?) {
+        let labels = rows.flatMap { $0["metadataParts"] as? [[String: Any]] ?? [] }.compactMap {
+            ($0["text"] as? [String: Any])?["content"] as? String
+        }
+        return (labels.first { $0.hasSuffix(" ago") }, labels.first { $0.hasSuffix(" views") || $0.hasSuffix(" view") })
+    }
 
     static func chronological(_ videos: [Self], followed: Set<String>) -> [Self] {
         var seen = Set<String>()
@@ -47,6 +60,7 @@ struct RoomVideoFacts: Sendable {
     let views: UInt64?
     let live: Bool
     let short: Bool
+    var publishedAt: Date? = nil
 
     static func creatorTaggedShort(title: String?, tags: [String]?, duration: String?) -> Bool {
         guard let duration else { return false }
@@ -283,7 +297,7 @@ struct ChannelCatalog: Sendable {
     func facts(for ids: [String], token: String) async throws -> [String: RoomVideoFacts] {
         guard !ids.isEmpty else { return [:] }
         let response = try await list("videos", ["part": "contentDetails,statistics,snippet", "id": ids.joined(separator: ","),
-            "fields": "items(id,contentDetails/duration,statistics/viewCount,snippet(title,tags,liveBroadcastContent))"], token)
+            "fields": "items(id,contentDetails/duration,statistics/viewCount,snippet(title,tags,liveBroadcastContent,publishedAt))"], token)
         var facts = [String: RoomVideoFacts]()
         for item in response.items {
             guard let id = item.id?.raw else { continue }
@@ -291,7 +305,8 @@ struct ChannelCatalog: Sendable {
             facts[id] = RoomVideoFacts(duration: duration,
                                        views: item.statistics?.viewCount.flatMap(UInt64.init),
                                        live: item.snippet?.liveBroadcastContent == "live",
-                                       short: RoomVideoFacts.creatorTaggedShort(title: item.snippet?.title, tags: item.snippet?.tags, duration: duration))
+                                       short: RoomVideoFacts.creatorTaggedShort(title: item.snippet?.title, tags: item.snippet?.tags, duration: duration),
+                                       publishedAt: Self.date(item.snippet?.publishedAt))
         }
         return facts
     }
@@ -416,7 +431,9 @@ struct ChannelCatalog: Sendable {
                             (video["thumbnailOverlays"] as? [Object])?.compactMap { overlay in
                                 let status = overlay["thumbnailOverlayTimeStatusRenderer"] as? Object
                                 return title(status?["text"] as? Object)
-                            }.first)))
+                            }.first),
+                        publicationLabel: title(video["publishedTimeText"] as? Object),
+                        viewLabel: title((video["shortViewCountText"] ?? video["viewCountText"]) as? Object)))
                 }
             }
         }

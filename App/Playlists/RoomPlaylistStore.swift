@@ -160,6 +160,19 @@ final class RoomPlaylistStore {
         if updated != original { try save(updated, replacing: original) }
     }
 
+    private static let quickID = UUID(uuidString: "A69FF305-F312-4AF1-80D7-804DB6C0DC9A")!
+
+    func saveQuickPick(_ video: ChannelVideo, seconds: Int?) throws {
+        try readLatest()
+        if playlists.contains(where: { $0.id == Self.quickID }) {
+            try add(video, to: Self.quickID, seconds: seconds)
+        } else {
+            var playlist = RoomPlaylist(id: Self.quickID, title: "Quick Playlist")
+            playlist.append(video, seconds: seconds)
+            try save(playlist)
+        }
+    }
+
     func delete(_ original: RoomPlaylist) throws {
         try readLatest()
         guard playlists.contains(original) else { throw RoomPlaylistError.changed }

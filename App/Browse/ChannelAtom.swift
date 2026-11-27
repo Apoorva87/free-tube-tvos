@@ -9,6 +9,7 @@ final class ChannelAtom: NSObject, XMLParserDelegate {
         var publisher = ""
         var thumbnail: URL?
         var date: Date?
+        var views: UInt64?
     }
 
     private let channelID: String
@@ -36,6 +37,7 @@ final class ChannelAtom: NSObject, XMLParserDelegate {
         text = ""
         if path == ["feed"] { sawFeed = true }
         if path == ["feed", "entry"] { entry = Entry() }
+        if name == "media:statistics" { entry?.views = attributes["views"].flatMap(UInt64.init) }
         if entry != nil, name == "media:thumbnail", let url = attributes["url"].flatMap(URL.init(string:)),
            url.scheme == "https" { entry?.thumbnail = url }
     }
@@ -57,7 +59,7 @@ final class ChannelAtom: NSObject, XMLParserDelegate {
                entry.owner.isEmpty || entry.owner == channelID {
                 videos.append(ChannelVideo(id: entry.id, title: entry.title, channelID: channelID,
                     channelTitle: entry.publisher.isEmpty ? feedTitle : entry.publisher, thumbnail: entry.thumbnail,
-                    publishedAt: date))
+                    publishedAt: date, viewLabel: entry.views.map(ChannelVideo.formatViews)))
             }
             entry = nil
         default: break

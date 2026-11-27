@@ -100,13 +100,12 @@ private struct RoomVideoDetails: View {
                     LazyHStack(alignment: .top, spacing: 20) {
                         ForEach(videos) { related in
                             Button { play(related, videos) } label: {
-                                VStack(alignment: .leading, spacing: 5) {
+                                VStack(alignment: .leading, spacing: 2) {
                                     RoomTileArtwork(url: related.thumbnail ?? related.coverThumbnail, placeholder: "play.rectangle",
                                                     duration: related.durationSeconds.map(RoomPlaylist.clock))
                                     Text(related.title).font(.system(size: 24, weight: .semibold))
                                         .lineLimit(2).multilineTextAlignment(.leading)
-                                    Text(related.channelTitle).font(.system(size: 20))
-                                        .foregroundStyle(RoomPalette.muted).lineLimit(1)
+                                    RoomTileByline(video: related, compact: true)
                                 }
                                 .frame(width: 276, alignment: .leading)
                             }

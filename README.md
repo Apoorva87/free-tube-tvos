@@ -1,6 +1,6 @@
 # freeTube for Apple TV
 
-freeTube is an independent YouTube client for Apple TV. Open **Discover** to see what your channels just published and find new creators through your subscriptions and recent likes. Select a thumbnail to play it, hold Select to save it to a playlist, or keep it playing in the corner while you search.
+freeTube is an independent YouTube client for Apple TV. Open **Discover** to see what your channels just published and find new creators through your subscriptions and recent likes. Select a thumbnail to play it, hold Select to follow its channel on this TV or save it to a playlist, or keep it playing in the corner while you search.
 
 [Try the interactive walkthrough](https://apoorva87.github.io/free-tube-tvos/) · [Build for Apple TV](#run-in-xcode) · [Connect your subscriptions](#connect-your-subscriptions)
 
@@ -11,6 +11,8 @@ Discover opens on **For you**. The first three rows are **Education**, **Economi
 Open **Settings → Discover rows** in the sidebar to show or hide any row, move it up or down, or add your own search topic. Turn on **Personal recommendations** for suggestions from likes and followed channels, or **From your subscriptions** for recent uploads grouped by creator. Changes are saved on this Apple TV. Explore, Music, Gaming, News, Sports, and Live remain available across the top of Discover.
 
 The native tvOS player supports speeds from 0.5× to 2×. Search, viewing history, and playlists work directly on the TV. **Ask AI** adds video research and playlist drafting through an optional paired computer.
+
+While the mini-player is open, hold Select on a video tile to add it directly to **Quick Playlist**. Queued picks play next in the order you add them. The playlist is also saved under **Playlists** for later.
 
 ## Run in Xcode
 

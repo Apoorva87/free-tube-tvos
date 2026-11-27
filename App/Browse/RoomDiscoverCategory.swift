@@ -202,7 +202,9 @@ struct RoomCategoryFeed: Sendable {
         guard !liveOnly || live || liveBadge else { return nil }
         return ChannelVideo(id: id, title: title, channelID: channel, channelTitle: name,
                             thumbnail: image(renderer.object("thumbnail")?["thumbnails"]),
-                            durationSeconds: RoomVideoFacts.seconds(from: renderer.object("lengthText")?.label))
+                            durationSeconds: RoomVideoFacts.seconds(from: renderer.object("lengthText")?.label),
+                            publicationLabel: renderer.object("publishedTimeText")?.label,
+                            viewLabel: (renderer.object("shortViewCountText") ?? renderer.object("viewCountText"))?.label)
     }
 
     private static func lockupVideo(_ lockup: CategoryObject, liveOnly: Bool) -> ChannelVideo? {
@@ -222,9 +224,11 @@ struct RoomCategoryFeed: Sendable {
             overlay.object("thumbnailOverlayBadgeViewModel")?["thumbnailBadges"] as? [CategoryObject] ?? []
         }.compactMap { $0.object("thumbnailBadgeViewModel") }
         guard !liveOnly || badges.contains(where: { $0["badgeStyle"] as? String == "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE" }) else { return nil }
+        let labels = ChannelVideo.listingLabels(rows)
         let seconds = badges.compactMap { RoomVideoFacts.seconds(from: $0["text"] as? String) }.first
         return ChannelVideo(id: id, title: title, channelID: channel, channelTitle: name,
-                            thumbnail: image(thumbnail?.object("image")?["sources"]), durationSeconds: seconds)
+                            thumbnail: image(thumbnail?.object("image")?["sources"]), durationSeconds: seconds,
+                            publicationLabel: labels.publication, viewLabel: labels.views)
     }
 
     private static func image(_ sources: Any?) -> URL? {
