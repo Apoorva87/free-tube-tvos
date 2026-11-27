@@ -74,9 +74,9 @@ extension ChannelCatalog {
             let content = item.object("richItemRenderer", "content") ?? item
             let video: ChannelVideo?
             if let lockup = content.object("lockupViewModel") {
-                video = relatedLockup(lockup)
+                video = publicVideoLockup(lockup)
             } else if let compact = content.object("compactVideoRenderer") ?? content.object("videoWithContextRenderer") ?? content.object("videoRenderer") {
-                video = relatedCompact(compact)
+                video = publicVideoRenderer(compact)
             } else if content["compactPlaylistRenderer"] != nil || content["compactRadioRenderer"] != nil {
                 video = nil
             } else { continue }
@@ -89,7 +89,7 @@ extension ChannelCatalog {
         return videos
     }
 
-    private static func relatedLockup(_ video: WatchObject) -> ChannelVideo? {
+    static func publicVideoLockup(_ video: [String: Any]) -> ChannelVideo? {
         guard video["contentType"] as? String == "LOCKUP_CONTENT_TYPE_VIDEO", let id = video["contentId"] as? String,
               let metadata = video.object("metadata", "lockupMetadataViewModel"), let title = metadata.object("title")?.watchText,
               let rows = metadata.object("metadata", "contentMetadataViewModel")?["metadataRows"] as? [WatchObject],
@@ -109,7 +109,7 @@ extension ChannelCatalog {
                             publicationLabel: labels.publication, viewLabel: labels.views)
     }
 
-    private static func relatedCompact(_ video: WatchObject) -> ChannelVideo? {
+    static func publicVideoRenderer(_ video: [String: Any]) -> ChannelVideo? {
         guard let id = video["videoId"] as? String, let title = video.object("title")?.watchText ?? video.object("headline")?.watchText,
               let byline = video.object("shortBylineText") ?? video.object("longBylineText") ?? video.object("ownerText"),
               let runs = byline["runs"] as? [WatchObject], let owner = runs.first,

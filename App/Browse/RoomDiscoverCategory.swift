@@ -22,6 +22,7 @@ enum RoomDiscoverCategory: String, CaseIterable, Identifiable, Hashable, Sendabl
 
 @MainActor @Observable
 final class RoomCategoryCatalog {
+    let music = RoomMusicFeed()
     private(set) var category: RoomDiscoverCategory = .forYou
     private(set) var shelves = [RoomDiscoverShelf]()
     private(set) var isLoading = false
@@ -101,6 +102,115 @@ final class RoomCategoryCatalog {
     }
 }
 
+@MainActor @Observable
+final class RoomMusicFeed {
+    private struct Mix {
+        let tracks: [ChannelVideo]
+        let expires: Date
+    }
+
+    private var mixes = [String: Mix]()
+    private(set) var isLoading = false
+    private(set) var errorMessage: String?
+    @ObservationIgnored private var currentRequest = UUID()
+    @ObservationIgnored private var lastRefresh: UUID?
+    private let fetch: @Sendable (String) async throws -> [ChannelVideo]
+
+    init(fetch: @escaping @Sendable (String) async throws -> [ChannelVideo] = RoomCategoryFeed().musicMix(for:)) {
+        self.fetch = fetch
+    }
+
+    // Legacy history has no genre field. Bound the number of watch pages retrieved on a cold visit.
+    private func recent(_ history: [ChannelVideo]) -> [ChannelVideo] {
+        var seen = Set<String>()
+        var recent = [ChannelVideo]()
+        for video in history where RoomAIValidation.validID(video.id) && seen.insert(video.id).inserted {
+            recent.append(video)
+            if recent.count == 18 { break }
+        }
+        return recent
+    }
+
+    func load(history: [ChannelVideo], refresh: UUID? = nil) async {
+        guard !Task.isCancelled else { return }
+        let request = UUID()
+        currentRequest = request
+        let force = refresh != nil && refresh != lastRefresh
+        lastRefresh = refresh
+        let recent = recent(history)
+        let ids = Set(recent.map(\.id))
+        mixes = mixes.filter { ids.contains($0.key) }
+        let watched = Set(history.map(\.id))
+        isLoading = !recent.isEmpty
+        errorMessage = nil
+        defer { if currentRequest == request { isLoading = false } }
+
+        var found = 0
+        var failed = false
+        for start in stride(from: 0, to: recent.count, by: 3) {
+            let batch = recent[start..<min(start + 3, recent.count)]
+            let pending = batch.filter { force || (mixes[$0.id]?.expires ?? .distantPast) <= Date() }
+            await withTaskGroup(of: (String, [ChannelVideo]?).self) { group in
+                for video in pending {
+                    group.addTask { [fetch] in (video.id, try? await fetch(video.id)) }
+                }
+                for await (id, tracks) in group {
+                    guard currentRequest == request, !Task.isCancelled else { group.cancelAll(); return }
+                    if let tracks {
+                        mixes[id] = Mix(tracks: tracks, expires: Date().addingTimeInterval(3600))
+                    } else { failed = true }
+                }
+            }
+            guard currentRequest == request, !Task.isCancelled else { return }
+            found += batch.filter { mixes[$0.id]?.tracks.contains { !watched.contains($0.id) } == true }.count
+            if found >= 2 { break }
+        }
+        if found == 0 && failed { errorMessage = "Couldn’t load music from your watch history. Refresh Discover to try again." }
+    }
+
+    func shelves(history: [ChannelVideo], publicRows: [RoomDiscoverShelf]) -> [RoomDiscoverShelf] {
+        var shown = Set(history.map(\.id))
+        let seeds = recent(history).compactMap { seed -> (song: ChannelVideo, tracks: [ChannelVideo])? in
+            guard let tracks = mixes[seed.id]?.tracks.filter({ !shown.contains($0.id) }), !tracks.isEmpty else { return nil }
+            return (seed, tracks)
+        }.prefix(2)
+        guard let latest = seeds.first else { return publicRows }
+        var similar = [ChannelVideo]()
+        var discoveries = [ChannelVideo]()
+        var artists = Set(history.map(\.channelID))
+        var nextSong = latest.tracks.makeIterator()
+        // Prefer the other recent song's mix for artist discovery. Alternate picks so even one mix can supply both rows.
+        var nextArtist = seeds.reversed().flatMap(\.tracks).makeIterator()
+        for _ in 0..<10 {
+            while let song = nextSong.next() {
+                if shown.insert(song.id).inserted { similar.append(song); break }
+            }
+            while let song = nextArtist.next() {
+                guard !artists.contains(song.channelID), shown.insert(song.id).inserted else { continue }
+                artists.insert(song.channelID)
+                discoveries.append(song)
+                break
+            }
+        }
+        if discoveries.isEmpty, similar.count > 1, let index = similar.lastIndex(where: { !artists.contains($0.channelID) }) {
+            discoveries.append(similar.remove(at: index))
+        }
+        var rows = [RoomDiscoverShelf(id: "music-similar",
+                                      title: "More like " + latest.song.title, videos: similar)]
+        if !discoveries.isEmpty {
+            rows.append(RoomDiscoverShelf(id: "music-discover-artists", title: "Artists to discover", videos: discoveries))
+        } else {
+            rows.append(RoomDiscoverShelf(id: "music-replay", title: "Play it again", videos: seeds.map(\.song)))
+        }
+        var displayed = Set(rows.flatMap(\.videos).map(\.id))
+        rows += publicRows.compactMap { row in
+            let videos = row.videos.filter { displayed.insert($0.id).inserted }
+            return videos.isEmpty ? nil : RoomDiscoverShelf(id: row.id, title: row.title, videos: videos)
+        }
+        return rows
+    }
+}
+
 private typealias CategoryObject = [String: Any]
 
 private extension Dictionary where Key == String, Value == Any {
@@ -118,6 +228,43 @@ private extension Dictionary where Key == String, Value == Any {
 /// Reads the same public YouTube destination pages that are available in a signed-out browser.
 struct RoomCategoryFeed: Sendable {
     private let catalog = ChannelCatalog()
+
+    func musicMix(for seed: String) async throws -> [ChannelVideo] {
+        guard RoomAIValidation.validID(seed) else { throw CatalogError.unreadable }
+        var url = URLComponents(string: "https://www.youtube.com/watch")!
+        url.queryItems = ["v": seed, "list": "RDAMVM" + seed, "start_radio": "1", "app": "desktop", "hl": "en"]
+            .map { URLQueryItem(name: $0.key, value: $0.value) }
+        var request = URLRequest(url: url.url!)
+        request.setValue("FreeTube/0.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html", forHTTPHeaderField: "Accept")
+        let (data, response) = try await catalog.session.data(for: request)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw CatalogError.unavailable("YouTube couldn’t load the song mix.")
+        }
+        return try Self.parseMusicMix(data, seed: seed)
+    }
+
+    static func parseMusicMix(_ data: Data, seed: String) throws -> [ChannelVideo] {
+        let root = try ChannelCatalog.publicRoot(from: data)
+        let endpoint = root.object("currentVideoEndpoint", "watchEndpoint")
+        guard endpoint?["videoId"] as? String == seed,
+              let watch = root.object("contents", "twoColumnWatchNextResults") ?? root.object("contents", "singleColumnWatchNextResults")
+        else { throw CatalogError.unreadable }
+        // YouTube returns a regular watch page without a music-radio playlist for non-song videos.
+        guard let playlist = watch.object("playlist", "playlist") else { return [] }
+        let mixID = "RDAMVM" + seed
+        guard endpoint?["playlistId"] as? String == mixID, playlist["playlistId"] as? String == mixID,
+              let entries = playlist["contents"] as? [CategoryObject] else { throw CatalogError.unreadable }
+        var seen: Set<String> = [seed]
+        return entries.compactMap { entry in
+            guard let track = entry.object("playlistPanelVideoRenderer"), track["unplayableText"] == nil,
+                  track["isPlayable"] as? Bool != false,
+                  let video = video(in: ["videoRenderer": track], liveOnly: false),
+                  RoomAIValidation.validID(video.id), seen.insert(video.id).inserted else { return nil }
+            return video
+        }
+    }
 
     func shelves(for category: RoomDiscoverCategory) async throws -> [RoomDiscoverShelf] {
         guard let id = category.channelID else { return [] }

@@ -5,7 +5,8 @@ struct RoomDiscoverView: View {
     let catalog: RoomCategoryCatalog
     let preferences: RoomDiscoverPreferences
     let interestFeed: RoomInterestFeed
-    let personalizedRows: [RoomDiscoverShelf]
+    let rows: [RoomDiscoverShelf]
+    let musicHistory: [ChannelVideo]
     let settings: () -> Void
     let category: RoomDiscoverCategory
     let reloadID: UUID?
@@ -22,6 +23,11 @@ struct RoomDiscoverView: View {
         let rows: [RoomInterestRow]
         let category: RoomDiscoverCategory
         let reloadID: UUID?
+    }
+
+    private struct MusicRequest: Equatable {
+        let ids: [String]
+        let refresh: UUID?
     }
 
     var body: some View {
@@ -47,6 +53,9 @@ struct RoomDiscoverView: View {
                 await catalog.load(category, force: reloadID != nil)
             }
         }
+        .task(id: MusicRequest(ids: musicHistory.map(\.id), refresh: category == .music ? reloadID : nil)) {
+            if category == .music { await catalog.music.load(history: musicHistory, refresh: reloadID) }
+        }
     }
 
     private var categories: some View {
@@ -69,9 +78,11 @@ struct RoomDiscoverView: View {
     private var feed: some View {
         let personal = category == .forYou
         let hasLibraryRows = preferences.rows.contains { $0.enabled && $0.query.isEmpty }
-        let loading = personal ? interestFeed.isLoading || (hasLibraryRows && (library.isLoading || library.discoverLoading)) : catalog.category != category || catalog.isLoading
-        let rows = personal ? personalizedRows : (catalog.category == category ? catalog.shelves : [])
-        let issue = personal ? interestFeed.errorMessage ?? (hasLibraryRows ? library.warning : nil) : (catalog.category == category ? catalog.errorMessage : nil)
+        let loading = personal ? interestFeed.isLoading || (hasLibraryRows && (library.isLoading || library.discoverLoading))
+            : catalog.category != category || catalog.isLoading || (category == .music && catalog.music.isLoading)
+        let categoryIssue = catalog.category == category ? catalog.errorMessage : nil
+        let issue = personal ? interestFeed.errorMessage ?? (hasLibraryRows ? library.warning : nil)
+            : categoryIssue ?? (category == .music ? catalog.music.errorMessage : nil)
         return ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 28) {
                 if let issue { RoomNotice(message: issue) }

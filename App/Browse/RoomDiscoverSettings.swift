@@ -76,12 +76,20 @@ final class RoomDiscoverPreferences {
 struct RoomDiscoverSettings: View {
     let preferences: RoomDiscoverPreferences
     let focus: FocusState<RoomBrowseFocus?>.Binding
+    @AppStorage(ChannelPlayback.softFadeKey) private var softFade = true
     @State private var addingTopic = false
     @State private var topic = ""
 
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 16) {
+                RoomShelfTitle(title: "Playback")
+                Toggle("Soft Fade", isOn: $softFade)
+                    .focused(focus, equals: .settingsFirst)
+                    .accessibilityIdentifier("settings.softFade")
+                Text("Overlap the next video’s audio briefly during the fade.")
+                    .font(.system(size: 24)).foregroundStyle(RoomPalette.muted)
+                    .padding(.bottom, 10)
                 RoomShelfTitle(title: "Discover rows")
                 Text("Choose which rows appear in For you and the order they appear.")
                     .font(.system(size: 24)).foregroundStyle(RoomPalette.muted)
@@ -91,7 +99,6 @@ struct RoomDiscoverSettings: View {
                 } label: {
                     Label("Add topic", systemImage: "plus")
                 }
-                .focused(focus, equals: .settingsFirst)
                 .accessibilityIdentifier("settings.addTopic")
                 .padding(.bottom, 12)
 

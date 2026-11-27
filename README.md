@@ -10,9 +10,15 @@ Discover opens on **For you**. The first three rows are **Education**, **Economi
 
 Open **Settings → Discover rows** in the sidebar to show or hide any row, move it up or down, or add your own search topic. Turn on **Personal recommendations** for suggestions from likes and followed channels, or **From your subscriptions** for recent uploads grouped by creator. Changes are saved on this Apple TV. Explore, Music, Gaming, News, Sports, and Live remain available across the top of Discover.
 
+Under **Discover → Music**, recent songs on this profile can add **More like [song]** and **Artists to discover** above the public Music rows. If the mix contains only familiar artists, **Play it again** features recent songs instead.
+
+Opening a creator from Search or the player shows **Recent uploads** and **Most viewed**. Two additional rows highlight shorter and longer watches when the channel has enough videos. Channels with similar runtimes can show earlier uploads and other picks instead.
+
 The native tvOS player supports speeds from 0.5× to 2×. Search, viewing history, and playlists work directly on the TV. **Ask AI** adds video research and playlist drafting through an optional paired computer.
 
-Hold Select on a video tile and choose **Add to Quick Playlist**. The same menu includes **Visit Creator** when the channel is available. Queued picks play next in the order you add them. Standalone videos then autoplay from each video’s related recommendations. Starting a saved playlist follows its saved order. freeTube prepares the next stream in the background. When it is queued in the player, the outgoing picture and audio fade over the last 0.35 seconds before the handoff. The playlist is also saved under **Playlists** for later.
+Hold Select on a video tile and choose **Add to Quick Playlist**. The same menu includes **Visit Creator** when the channel is available. Queued picks play next in the order you add them. Standalone videos then autoplay from each video’s related recommendations. Starting a saved playlist follows its saved order. The Quick Playlist is also saved under **Playlists** for later.
+
+**Settings → Playback → Soft Fade** is on by default. When the next stream is ready, its audio fades in during the last half-second of the outgoing video. The incoming player takes over the picture at its current position. Turn Soft Fade off for the previous transition, which preloads the next item, fades the outgoing picture and audio over 0.35 seconds and starts the next item at the handoff.
 
 Search remembers the last six searches for each profile on this TV. Select a recent term to search again, use **Clear search** to reset the field and results, or choose **Clear history** to erase recent terms.
 

@@ -36,6 +36,72 @@ final class freeTubeNavigationTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 6), .completed)
     }
 
+    func testMusicShowsTwoRowsForARecentlyPlayedSong() throws {
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("This test seeds an isolated guest watch history.")
+        #endif
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let seed = "dQw4w9WgXcQ"
+        let video: [String: Any] = ["id": seed, "title": "Never Gonna Give You Up",
+                                    "channelTitle": "Rick Astley", "channelID": "UCuAXFkgsw1L7xaCfnd5JJOw",
+                                    "publishedAt": Date()]
+        let history = try PropertyListSerialization.data(fromPropertyList: [["owner": "guest", "video": video]],
+                                                         format: .binary, options: 0)
+        app.launchArguments = ["-room.watch-history.v1", "<" + history.map { String(format: "%02x", $0) }.joined() + ">"]
+        app.launch()
+        selectWithRemote(app.buttons["discover-category-music"], in: app)
+        let similar = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-music-similar-'")).firstMatch
+        let artists = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-music-discover-artists-'")).firstMatch
+        XCTAssertTrue(similar.waitForExistence(timeout: 45))
+        XCTAssertTrue(artists.waitForExistence(timeout: 8))
+        XCTAssertNotEqual(similar.label, artists.label)
+    }
+
+    func testSearchOpensCreatorWithFourVideoShelves() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let remote = XCUIRemote.shared
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-search"], in: app)
+        selectWithRemote(app.textFields.firstMatch, in: app)
+        app.typeText("@BlenderOfficial\n")
+        let channel = app.buttons["Blender"]
+        XCTAssertTrue(channel.waitForExistence(timeout: 30))
+        remote.press(.menu)
+        selectWithRemote(channel, in: app)
+        XCTAssertTrue(app.staticTexts["Recent uploads"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.staticTexts["Most viewed"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.staticTexts["Under 10 minutes"].exists)
+        XCTAssertTrue(app.staticTexts["20 minutes or more"].exists)
+    }
+
+    func testSoftFadeSettingPersistsAcrossLaunches() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let remote = XCUIRemote.shared
+        func openSettings() -> XCUIElement {
+            app.launch()
+            remote.press(.menu)
+            selectWithRemote(app.buttons["nav-settings"], in: app)
+            let setting = app.descendants(matching: .any)["settings.softFade"].firstMatch
+            XCTAssertTrue(setting.waitForExistence(timeout: 5))
+            return setting
+        }
+        let setting = openSettings()
+        let original = setting.value as? String
+        XCTAssertNotNil(original)
+        selectWithRemote(setting, in: app)
+        let changed = setting.value as? String
+        XCTAssertNotEqual(original, changed)
+        app.terminate()
+        let reopened = openSettings()
+        XCTAssertEqual(reopened.value as? String, changed)
+        selectWithRemote(reopened, in: app)
+        XCTAssertEqual(reopened.value as? String, original)
+    }
+
     func testForYouInterestRowsReflectSettingsAfterRelaunch() {
         continueAfterFailure = false
         let app = XCUIApplication()

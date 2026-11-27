@@ -83,6 +83,12 @@ private struct RoomShell: View {
         chosenCategory ?? .forYou
     }
 
+    private var discoverRows: [RoomDiscoverShelf] {
+        if discoverCategory == .forYou { return personalizedRows }
+        let rows = categoryCatalog.category == discoverCategory ? categoryCatalog.shelves : []
+        return discoverCategory == .music ? categoryCatalog.music.shelves(history: history.videos, publicRows: rows) : rows
+    }
+
     private var personalizedRows: [RoomDiscoverShelf] {
         let enabled = preferences.rows.filter(\.enabled)
         let legacy = enabled.contains { $0.query.isEmpty } ? library.discoverShelves : []
@@ -145,7 +151,8 @@ private struct RoomShell: View {
                         switch section {
                         case .discover:
                             RoomDiscoverView(library: library, catalog: categoryCatalog, preferences: preferences, interestFeed: interestFeed,
-                                             personalizedRows: personalizedRows, settings: { choose(.settings) }, category: discoverCategory,
+                                             rows: discoverRows, musicHistory: discoverCategory == .music ? history.videos : [],
+                                             settings: { choose(.settings) }, category: discoverCategory,
                                              reloadID: categoryReload, signedIn: account.isSignedIn, focus: $focus,
                                              select: { chosenCategory = $0; categoryReload = nil },
                                              refresh: refreshDiscover, openMenu: { menuOpen = true }, play: onPlay,
@@ -304,8 +311,7 @@ private struct RoomShell: View {
     private func returningFocus(in item: RoomSection) -> RoomBrowseFocus {
         guard let lastTile else { return firstFocus(in: item) }
         if item == .discover, case .shelfVideo = lastTile {
-            let rows = discoverCategory == .forYou ? personalizedRows : categoryCatalog.shelves
-            return RoomDiscoverView.availableFocus(lastTile, category: discoverCategory, rows: rows)
+            return RoomDiscoverView.availableFocus(lastTile, category: discoverCategory, rows: discoverRows)
         }
         return lastTile
     }

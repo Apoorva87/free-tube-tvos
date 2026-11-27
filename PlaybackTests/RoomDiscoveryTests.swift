@@ -30,6 +30,92 @@ final class RoomDiscoveryTests: XCTestCase {
                      publishedAt: Date(timeIntervalSince1970: Double(day) * 86_400))
     }
 
+    func testMusicMixRequiresMatchedSongAndPlaylistAndKeepsPlayableTracks() throws {
+        typealias Object = [String: Any]
+        let seed = "seed0000001"
+        let mix = "RDAMVM" + seed
+        let channel = "UC1111111111111111111111"
+        let owner = ["text": "Artist", "navigationEndpoint": ["browseEndpoint": ["browseId": channel]]] as Object
+        func track(_ id: String, playable: Bool = true) -> Object {
+            ["playlistPanelVideoRenderer": ["videoId": id, "title": ["simpleText": "Track"],
+                "longBylineText": ["runs": [owner]], "lengthText": ["simpleText": "3:42"], "isPlayable": playable]]
+        }
+        func page(song: String, playlist: String?, entries: [Object] = []) throws -> Data {
+            var watch: Object = [:]
+            if let playlist { watch["playlist"] = ["playlist": ["playlistId": playlist, "contents": entries]] }
+            let root: Object = ["currentVideoEndpoint": ["watchEndpoint": ["videoId": song, "playlistId": mix]],
+                                "contents": ["twoColumnWatchNextResults": watch]]
+            let data = try JSONSerialization.data(withJSONObject: root)
+            return Data(("<script>var ytInitialData = " + String(decoding: data, as: UTF8.self) + ";</script>").utf8)
+        }
+        let entries = [track(seed), track("song0000001"), track("song0000001"), track("bad"), track("song0000002", playable: false)]
+        let songs = try RoomCategoryFeed.parseMusicMix(page(song: seed, playlist: mix, entries: entries), seed: seed)
+        XCTAssertEqual(songs.map(\.id), ["song0000001"])
+        XCTAssertEqual(songs.first?.durationSeconds, 222)
+        XCTAssertEqual(songs.first?.channelID, channel)
+        XCTAssertTrue(try RoomCategoryFeed.parseMusicMix(page(song: seed, playlist: nil), seed: seed).isEmpty)
+        XCTAssertThrowsError(try RoomCategoryFeed.parseMusicMix(page(song: "wrong000001", playlist: mix), seed: seed))
+        XCTAssertThrowsError(try RoomCategoryFeed.parseMusicMix(page(song: seed, playlist: "different", entries: entries), seed: seed))
+    }
+
+    @MainActor func testMusicRowsUseRestoredPlaybackHistoryCacheMixesAndDeduplicatePublicRows() async throws {
+        let suite = "music-watch-history-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let newer = video("seed0000002", by: "Known")
+        let older = video("seed0000001", by: "Old")
+        let news = video("news0000001", by: "Reporter")
+        let original = RoomWatchHistoryStore(defaults: defaults)
+        original.select(.local)
+        for item in [older, newer, news] { original.record(item) }
+        let restored = RoomWatchHistoryStore(defaults: defaults)
+        restored.select(.local)
+
+        let similar = video("song0000001", by: "Known")
+        let discovery = video("song0000002", by: "New")
+        let publicSong = video("song0000003", by: "Public")
+        let publicRow = RoomDiscoverShelf(id: "music-0", title: "Trending", videos: [similar, discovery, publicSong])
+        actor Counter {
+            var calls = [String: Int]()
+            func count(_ id: String) { calls[id, default: 0] += 1 }
+        }
+        let counter = Counter()
+        let feed = RoomMusicFeed { id in
+            await counter.count(id)
+            if id == newer.id { return [newer, older, similar] }
+            if id == older.id { return [similar, discovery, discovery] }
+            return []
+        }
+        await feed.load(history: restored.videos)
+        let rows = feed.shelves(history: restored.videos, publicRows: [publicRow])
+        XCTAssertEqual(rows.map(\.id), ["music-similar", "music-discover-artists", "music-0"])
+        XCTAssertEqual(rows.first?.title, "More like " + newer.title)
+        XCTAssertEqual(rows.map(\.videos), [[similar], [discovery], [publicSong]])
+        await feed.load(history: restored.videos)
+        let calls = await counter.calls
+        XCTAssertEqual(calls, [newer.id: 1, older.id: 1, news.id: 1])
+        restored.select(.profile("another-profile"))
+        XCTAssertEqual(feed.shelves(history: restored.videos, publicRows: [publicRow]), [publicRow])
+    }
+
+    @MainActor func testMusicRowsWithOneSongReserveNewArtistsAndOfferReplayWhenAllArtistsAreFamiliar() async {
+        let song = video("seed0000001", by: "Familiar")
+        let first = video("song0000001", by: "Familiar")
+        let second = video("song0000002", by: "New")
+        let third = video("song0000003", by: "Other")
+        let mix = RoomMusicFeed { _ in [song, first, second, third] }
+        await mix.load(history: [song])
+        let rows = mix.shelves(history: [song], publicRows: [])
+        XCTAssertEqual(rows.map(\.videos), [[first, third], [second]])
+        let familiar = RoomMusicFeed { _ in [song, first] }
+        await familiar.load(history: [song])
+        let replay = familiar.shelves(history: [song], publicRows: [])
+        XCTAssertEqual(replay.map(\.title), ["More like " + song.title, "Play it again"])
+        XCTAssertEqual(replay.map(\.videos), [[first], [song]])
+        await familiar.load(history: [])
+        XCTAssertTrue(familiar.shelves(history: [], publicRows: []).isEmpty)
+    }
+
     func testRowsMixInterestsThenSurfaceRecentDistinctCreators() {
         let science = [video("sub", by: "subscribed"), video("a1", by: "A"), video("a2", by: "A"),
                        video("c", by: "C"), video("d", by: "D", day: 2)]

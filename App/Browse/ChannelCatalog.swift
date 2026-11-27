@@ -18,9 +18,9 @@ struct ChannelVideo: Identifiable, Hashable, Codable, Sendable {
     }
 
     static func listingLabels(_ rows: [[String: Any]]) -> (publication: String?, views: String?) {
-        let labels = rows.flatMap { $0["metadataParts"] as? [[String: Any]] ?? [] }.compactMap {
-            ($0["text"] as? [String: Any])?["content"] as? String
-        }
+        let parts = rows.flatMap { $0["metadataParts"] as? [[String: Any]] ?? [] }
+        let labels = parts.compactMap { ($0["text"] as? [String: Any])?["content"] as? String }
+            + parts.compactMap { $0["accessibilityLabel"] as? String }
         return (labels.first { $0.hasSuffix(" ago") }, labels.first { $0.hasSuffix(" views") || $0.hasSuffix(" view") })
     }
 
@@ -271,9 +271,12 @@ struct ChannelCatalog: Sendable {
         return CatalogPage(videos: videos, next: result.nextPageToken)
     }
 
-    func search(_ query: String, token: String, page: String? = nil, videosOnly: Bool = false) async throws -> CatalogPage {
-        let result = try await list("search", ["part": "snippet", "q": query, "type": videosOnly ? "video" : "channel,video",
-            "maxResults": videosOnly ? "50" : "30", "pageToken": page,
+    func search(_ query: String?, token: String, page: String? = nil, videosOnly: Bool = false,
+                mostViewedBy channelID: String? = nil) async throws -> CatalogPage {
+        let onlyVideos = videosOnly || channelID != nil
+        let result = try await list("search", ["part": "snippet", "q": query, "type": onlyVideos ? "video" : "channel,video",
+            "channelId": channelID, "order": channelID == nil ? nil : "viewCount",
+            "maxResults": onlyVideos ? "50" : "30", "pageToken": page,
             "fields": "nextPageToken,items(id(channelId,videoId),snippet(title,channelTitle,channelId,publishedAt,thumbnails))"], token)
         var found = CatalogPage(next: result.nextPageToken)
         for item in result.items {
@@ -341,7 +344,7 @@ struct ChannelCatalog: Sendable {
         try await publicPage(path: "watch", item: URLQueryItem(name: "v", value: videoID))
     }
 
-    private func publicPage(path: String, item: URLQueryItem) async throws -> Data {
+    func publicPage(path: String, item: URLQueryItem) async throws -> Data {
         var components = URLComponents(string: "https://www.youtube.com/" + path)!
         components.queryItems = [item, URLQueryItem(name: "app", value: "desktop")]
         var request = URLRequest(url: components.url!)

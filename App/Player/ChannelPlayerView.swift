@@ -188,6 +188,7 @@ private struct NativePlayer: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+        if controller.player !== session.playback.player { controller.player = session.playback.player }
         controller.showsPlaybackControls = !miniature
         controller.view.isUserInteractionEnabled = !miniature
         let coordinator = context.coordinator
@@ -235,7 +236,10 @@ private struct NativePlayer: UIViewControllerRepresentable {
 final class ChannelPlayback {
     enum Phase: Equatable { case loading, playing, finished, failed(String) }
     var phase = Phase.loading
-    let player: AVQueuePlayer = {
+    static let softFadeKey = "room.playback.soft-fade"
+    private var softFadeEnabled = true
+    private(set) var incomingPlayer: AVQueuePlayer?
+    private(set) var player: AVQueuePlayer = {
         let player = AVQueuePlayer()
         // The session owns queue priority and observes the outgoing item's end.
         player.actionAtItemEnd = .pause
@@ -251,11 +255,19 @@ final class ChannelPlayback {
     private let resolver = PublicVideoPlayer()
     private var activeID = UUID()
     private var statusObservation: NSKeyValueObservation?
+    private var transportObservation: NSKeyValueObservation?
     private var progressObserver: Any?
     private var notificationObservers: [NSObjectProtocol] = []
     private var eventsContinuation: AsyncStream<Event>.Continuation?
 
     private enum Event: Sendable { case status(AVPlayerItem.Status), started, ended, failed }
+
+    func configureSoftFade(_ enabled: Bool, next: ChannelVideo?) {
+        guard enabled != softFadeEnabled else { return }
+        softFadeEnabled = enabled
+        discardPrepared()
+        prepareNext(next)
+    }
 
     func prepareNext(_ video: ChannelVideo?) {
         guard video?.id != preparedID else { return }
@@ -266,9 +278,20 @@ final class ChannelPlayback {
         preparing = Task {
             do {
                 let item = try await resolveItem(video)
-                guard !Task.isCancelled, activeID == generation, player.currentItem === current,
-                      player.canInsert(item, after: current) else { return }
-                player.insert(item, after: current)
+                guard !Task.isCancelled, activeID == generation, player.currentItem === current else { return }
+                if softFadeEnabled {
+                    let incoming = AVQueuePlayer(items: [item])
+                    incoming.actionAtItemEnd = .pause
+                    incoming.isMuted = player.isMuted
+                    incoming.volume = 0
+                    incomingPlayer = incoming
+                    transportObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
+                        Task { @MainActor in self?.updateFade() }
+                    }
+                } else {
+                    guard player.canInsert(item, after: current) else { return }
+                    player.insert(item, after: current)
+                }
                 preparedItem = item
             } catch {
                 if !Task.isCancelled { preparedID = nil }
@@ -282,6 +305,11 @@ final class ChannelPlayback {
         if let preparedItem, player.items().contains(preparedItem), player.currentItem !== preparedItem {
             player.remove(preparedItem)
         }
+        transportObservation?.invalidate()
+        transportObservation = nil
+        incomingPlayer?.pause()
+        incomingPlayer?.removeAllItems()
+        incomingPlayer = nil
         preparedItem = nil
         preparedID = nil
         setFade(0)
@@ -301,12 +329,24 @@ final class ChannelPlayback {
             guard !Task.isCancelled else { return }
         }
         let warm = usePrepared && preparedID == video.id ? preparedItem : nil
-        let reuse = warm.flatMap { $0.status == .failed || !player.items().contains($0) ? nil : $0 }
+        let incoming = incomingPlayer
+        let reuse = warm.flatMap { item in
+            item.status != .failed && (incoming?.currentItem === item || player.items().contains(item)) ? item : nil
+        }
         if reuse != nil {
             activeID = UUID()
             clearObservers()
             preparedItem = nil
+            incomingPlayer = nil
             discardPrepared()
+            if let incoming {
+                incoming.defaultRate = player.defaultRate
+                incoming.isMuted = player.isMuted
+                incoming.volume = player.volume
+                player.pause()
+                player.removeAllItems()
+                player = incoming
+            }
             phase = .playing
         } else {
             stop()
@@ -329,8 +369,8 @@ final class ChannelPlayback {
             guard id == activeID else { return }
             let events = observe(item)
             defer { if id == activeID { clearObservers() } }
-            if reuse != nil { player.advanceToNextItem() }
-            else { player.replaceCurrentItem(with: item) }
+            if reuse == nil { player.replaceCurrentItem(with: item) }
+            else if incoming == nil { player.advanceToNextItem() }
             player.play()
             for await event in events {
                 guard !Task.isCancelled, id == activeID else { return }
@@ -401,14 +441,40 @@ final class ChannelPlayback {
 
     private func updateFade() {
         guard let preparedItem, preparedItem.status != .failed,
-              let current = player.currentItem, current.duration.isNumeric, player.rate > 0 else {
+              let current = player.currentItem, current.duration.isNumeric else {
             setFade(0)
             return
         }
         let end = current.forwardPlaybackEndTime.isNumeric
             ? CMTimeMinimum(current.duration, current.forwardPlaybackEndTime) : current.duration
-        let remaining = (end.seconds - player.currentTime().seconds) / Double(player.rate)
-        setFade(remaining.isFinite ? min(1, max(0, 1 - remaining / 0.35)) : 0)
+        let distance = end.seconds - player.currentTime().seconds
+        if let incoming = incomingPlayer {
+            // At natural end AVFoundation pauses the outgoing player. Let the
+            // incoming clock continue through promotion, including that callback.
+            if player.timeControlStatus != .playing || player.rate <= 0 {
+                if player.currentTime() < end || player.timeControlStatus == .waitingToPlayAtSpecifiedRate { incoming.pause() }
+                return
+            }
+            let remaining = distance / Double(player.rate)
+            let ready = preparedItem.status == .readyToPlay
+            // Leave enough of even a very short clip to play after the picture changes.
+            let incomingLength = preparedItem.duration.seconds / Double(player.rate)
+            let overlap = incomingLength.isFinite && incomingLength > 0 ? min(0.55, incomingLength / 2) : 0.55
+            let fraction = min(1, max(0, 1 - remaining / (ready ? overlap : 0.35)))
+            setFade(fraction)
+            if ready && fraction > 0 {
+                incoming.isMuted = player.isMuted
+                incoming.volume = (originalVolume ?? player.volume) * Float(fraction)
+                if incoming.rate != player.rate { incoming.playImmediately(atRate: player.rate) }
+            } else if incoming.rate != 0 || incoming.currentTime().seconds > 0 {
+                incoming.pause()
+                incoming.volume = 0
+                incoming.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+        } else {
+            let remaining = distance / Double(player.rate)
+            setFade(player.rate > 0 && remaining.isFinite ? min(1, max(0, 1 - remaining / 0.35)) : 0)
+        }
     }
 
     private func setFade(_ fraction: Double) {
@@ -420,6 +486,8 @@ final class ChannelPlayback {
     }
 
     private func clearObservers() {
+        transportObservation?.invalidate()
+        transportObservation = nil
         if let fadeObserver {
             player.removeTimeObserver(fadeObserver)
             self.fadeObserver = nil

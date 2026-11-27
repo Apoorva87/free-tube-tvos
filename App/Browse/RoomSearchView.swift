@@ -195,6 +195,10 @@ struct RoomChannelView: View {
     @State private var detailed: RoomChannel?
     @State private var showingSubscription = false
     @State private var videos = [ChannelVideo]()
+    @State private var popular = [ChannelVideo]()
+    @State private var isLoadingPopular = true
+    @State private var popularError: String?
+    @State private var popularRevision = UUID()
     @State private var next: String?
     @State private var isLoading = true
     @State private var error: String?
@@ -245,21 +249,25 @@ struct RoomChannelView: View {
                         }
                     }
                 }
-                RoomShelfTitle(title: "Recent uploads")
                 if isLoading { RoomLoading(text: "Loading uploads…").accessibilityIdentifier("player-panel-loading") }
                 if let error {
                     RoomNotice(message: error).accessibilityIdentifier("player-panel-error")
                     Button("Try again") { revision = UUID() }.accessibilityIdentifier("player-panel-retry")
                 }
-                if !isLoading && videos.isEmpty && error == nil {
-                    Text("This channel has no recent public uploads.").foregroundStyle(.secondary)
+                ForEach(RoomCreatorShelf.rows(for: channel.id, recent: videos, popular: popular, facts: library.videoFacts)) { row in
+                    CreatorVideoRow(row: row) { play($0, row.videos) }
+                    if row.kind == .recent { moreUploads }
+                }
+                if videos.isEmpty { moreUploads }
+                if isLoadingPopular {
+                    RoomLoading(text: "Loading most viewed…")
+                } else if let popularError {
+                    RoomNotice(message: "Most viewed couldn’t load. " + popularError)
+                    Button("Retry most viewed") { popularRevision = UUID() }
+                }
+                if !isLoading && !isLoadingPopular && videos.isEmpty && popular.isEmpty && error == nil && popularError == nil {
+                    Text("This channel has no public uploads.").foregroundStyle(.secondary)
                         .accessibilityIdentifier("player-panel-empty")
-                }
-                RoomVideoGrid(videos: videos) { video in
-                    play(video, videos)
-                }
-                if next != nil && !isLoading && error == nil {
-                    Button("More uploads") { revision = UUID() }
                 }
             }.padding(returnToPlayer == nil ? 16 : 42)
         }
@@ -292,6 +300,29 @@ struct RoomChannelView: View {
             }
         }
         .task(id: revision) { await load() }
+        .task(id: popularRevision) { await loadPopular() }
+    }
+
+    @ViewBuilder private var moreUploads: some View {
+        if next != nil && !isLoading && error == nil {
+            Button("More uploads") { revision = UUID() }
+        }
+    }
+
+    @MainActor private func loadPopular() async {
+        isLoadingPopular = true
+        popularError = nil
+        defer { if !Task.isCancelled { isLoadingPopular = false } }
+        do {
+            let token = account.isSignedIn ? try? await account.accessToken() : nil
+            try Task.checkCancellation()
+            let results = try await library.api.mostViewed(channel, token: token)
+            try Task.checkCancellation()
+            popular = results
+        } catch {
+            guard !Task.isCancelled else { return }
+            popularError = error.localizedDescription
+        }
     }
 
     @MainActor private func load() async {
@@ -309,7 +340,7 @@ struct RoomChannelView: View {
             } catch {
                 try Task.checkCancellation()
                 // The first page of a creator's uploads is also available publicly.
-                guard returnToPlayer != nil, next == nil else { throw error }
+                guard next == nil else { throw error }
                 token = nil
             }
             try Task.checkCancellation()
@@ -322,6 +353,20 @@ struct RoomChannelView: View {
         } catch {
             guard !Task.isCancelled else { return }
             self.error = error.localizedDescription
+        }
+    }
+}
+
+private struct CreatorVideoRow: View {
+    let row: RoomCreatorShelf
+    let play: (ChannelVideo) -> Void
+    // A video can appear on multiple shelves. Each row tracks its own remote focus.
+    @FocusState private var focus: RoomBrowseFocus?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            RoomShelfTitle(title: row.kind.rawValue)
+            RoomVideoShelf(videos: row.videos, focus: $focus, openMenu: {}, action: play)
         }
     }
 }

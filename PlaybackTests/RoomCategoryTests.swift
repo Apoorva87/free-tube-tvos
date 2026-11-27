@@ -150,3 +150,111 @@ extension RoomCategoryTests {
         XCTAssertEqual(RoomDiscoverPreferences(defaults: defaults).rows, Array(preferences.rows.dropLast()))
     }
 }
+
+extension RoomCategoryTests {
+    func testCreatorPopularPlaylistRequiresExactPlaylistAndOwnerAndPreservesRank() throws {
+        func entry(_ id: String, creator: String) -> Object {
+            let byline = ["runs": [["text": "Creator", "navigationEndpoint": ["browseEndpoint": ["browseId": creator]]]]]
+            return ["playlistVideoRenderer": ["videoId": id, "title": ["simpleText": id], "shortBylineText": byline,
+                                              "lengthText": ["simpleText": "24:05"]]]
+        }
+        let first = entry("popular0001", creator: owner)
+        let second = entry("popular0002", creator: owner)
+        let foreign = entry("foreign0001", creator: "UC1111111111111111111111")
+        let playlist = ["playlistVideoListRenderer": ["contents": [second, foreign, second, first]]]
+        let sections = [["itemSectionRenderer": ["contents": [playlist]]]]
+        let tab: Object = ["selected": true, "content": ["sectionListRenderer": ["contents": sections]]]
+        func page(playlistID: String, creator: String) throws -> Data {
+            let header: Object = ["playlistId": playlistID, "ownerEndpoint": ["browseEndpoint": ["browseId": creator]]]
+            let json = try JSONSerialization.data(withJSONObject: [
+                "header": ["playlistHeaderRenderer": header],
+                "contents": ["twoColumnBrowseResultsRenderer": ["tabs": [["tabRenderer": tab]]]]
+            ])
+            return Data(("<script>var ytInitialData = " + String(decoding: json, as: UTF8.self) + ";</script>").utf8)
+        }
+        let id = "UULP" + owner.dropFirst(2)
+        let ranked = try ChannelCatalog.publicMostViewed(from: page(playlistID: id, creator: owner), channelID: owner)
+        XCTAssertEqual(ranked.map(\.id), ["popular0002", "popular0001"])
+        XCTAssertEqual(ranked.first?.durationSeconds, 1445)
+        XCTAssertThrowsError(try ChannelCatalog.publicMostViewed(from: page(playlistID: "UU" + owner.dropFirst(2), creator: owner), channelID: owner))
+        XCTAssertThrowsError(try ChannelCatalog.publicMostViewed(from: page(playlistID: id, creator: "another"), channelID: owner))
+    }
+
+    func testCreatorRuntimeRowsKeepOnlyMatchingVideosAndUseRicherDuplicateMetadata() {
+        func video(_ id: String, _ duration: Int? = nil, creator: String? = nil) -> ChannelVideo {
+            ChannelVideo(id: id, title: id, channelID: creator ?? owner, channelTitle: "Creator", thumbnail: nil,
+                         durationSeconds: duration)
+        }
+        let recent = [video("latest"), video("quick"), video("mid", 600), video("unknown"), video("foreign", 15, creator: "other")]
+        let ranked = [video("favorite"), video("long", 1200), video("quick", 599), video("quick", 599), video("midrange", 1199)]
+        let rows = RoomCreatorShelf.rows(for: owner, recent: recent, popular: ranked, facts: [:])
+        XCTAssertEqual(rows.map(\.kind), [.recent, .popular, .quick, .long])
+        XCTAssertEqual(rows[0].videos.map(\.id), ["latest", "quick", "mid", "unknown"])
+        XCTAssertEqual(rows[1].videos.map(\.id), ["favorite", "long", "quick", "midrange"])
+        XCTAssertEqual(rows[2].videos.map(\.id), ["quick"])
+        XCTAssertEqual(rows[3].videos.map(\.id), ["long"])
+        let songs = (0..<24).map { video("song-\($0)", 180 + $0) }
+        let songRows = RoomCreatorShelf.rows(for: owner, recent: songs, popular: songs.reversed(), facts: [:])
+        XCTAssertEqual(songRows.map(\.kind), [.recent, .popular, .shorter, .longer])
+        let shortIDs = Set(songRows[2].videos.map(\.id))
+        let longIDs = Set(songRows[3].videos.map(\.id))
+        XCTAssertTrue(shortIDs.isDisjoint(with: longIDs))
+        XCTAssertTrue(shortIDs.union(longIDs).isDisjoint(with: Set(songs.prefix(5).map(\.id) + songs.suffix(5).map(\.id))))
+        let series = songs.enumerated().map { index, video in
+            var episode = video
+            episode.durationSeconds = 1800
+            episode.publishedAt = Date(timeIntervalSince1970: Double(index))
+            return episode
+        }
+        let seriesRows = RoomCreatorShelf.rows(for: owner, recent: series.reversed(), popular: series, facts: [:])
+        XCTAssertEqual(seriesRows.map(\.kind), [.recent, .popular, .earlier, .more])
+        XCTAssertTrue(Set(seriesRows[2].videos.map(\.id)).isDisjoint(with: seriesRows[3].videos.map(\.id)))
+        XCTAssertEqual(RoomCreatorShelf.rows(for: owner, recent: [video("unknown")], popular: [], facts: [:]).map(\.kind), [.recent])
+    }
+}
+
+private final class EmptyCreatorRanking: URLProtocol, @unchecked Sendable {
+    static let channelID = "UC0000000000000000000000"
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+
+    override func startLoading() {
+        let url = request.url!
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let authorization = request.value(forHTTPHeaderField: "Authorization")
+        let body: String
+        let status: Int
+        if url.host == "www.youtube.com", url.path == "/playlist", authorization == nil,
+           query.contains(URLQueryItem(name: "list", value: "UULP0000000000000000000000")) {
+            body = #"<script>var ytInitialData = {"header":{"playlistHeaderRenderer":{"playlistId":"UULP0000000000000000000000","ownerEndpoint":{"browseEndpoint":{"browseId":"UC0000000000000000000000"}}}},"contents":{"twoColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"selected":true,"content":{"sectionListRenderer":{"contents":[]}}}}]}}};</script>"#
+            status = 200
+        } else if url.host == "www.googleapis.com", url.path == "/youtube/v3/search", authorization == "Bearer fixture",
+                  query.contains(URLQueryItem(name: "channelId", value: Self.channelID)),
+                  query.contains(URLQueryItem(name: "order", value: "viewCount")), query.contains(URLQueryItem(name: "type", value: "video")) {
+            body = #"{"items":[{"id":{"videoId":"popular0001"},"snippet":{"title":"Favorite","channelTitle":"Creator","channelId":"UC0000000000000000000000"}}]}"#
+            status = 200
+        } else {
+            body = ""
+            status = 503
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!,
+                            cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
+extension RoomCategoryTests {
+    @MainActor
+    func testEmptyPublicRankingUsesChannelWideSignedSortWhenAvailable() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [EmptyCreatorRanking.self]
+        let catalog = ChannelCatalog(session: URLSession(configuration: config))
+        let channel = RoomChannel(id: EmptyCreatorRanking.channelID, title: "Creator")
+        let guest = try await catalog.mostViewed(channel, token: nil)
+        XCTAssertTrue(guest.isEmpty)
+        let signed = try await catalog.mostViewed(channel, token: "fixture")
+        XCTAssertEqual(signed.map(\.id), ["popular0001"])
+    }
+}
