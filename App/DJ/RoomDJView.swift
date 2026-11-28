@@ -13,6 +13,7 @@ struct RoomDJView: View {
     let interestFeed: RoomInterestFeed
     let focus: FocusState<RoomBrowseFocus?>.Binding
     let openMenu: () -> Void
+    @Binding var sheetVisible: Bool
 
     @State private var query = ""
     @State private var pick: ChannelVideo?
@@ -127,7 +128,18 @@ struct RoomDJView: View {
         .onReceive(viewing.playback.player.publisher(for: \.timeControlStatus).receive(on: RunLoop.main)) {
             transportStatus = $0
         }
-        .sheet(item: $pick, onDismiss: restoreQueueFocus) { video in songActions(video) }
+        .onChange(of: viewing.presentation) { _, presentation in
+            guard presentation == .full else { return }
+            pick = nil
+            selectingLanguage = false
+            selectingMode = false
+        }
+        .sheet(item: $pick, onDismiss: {
+            sheetVisible = false
+            restoreQueueFocus()
+        }) { video in
+            songActions(video).onAppear { sheetVisible = true }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIFocusSystem.didUpdateNotification)) { update in
             // The tile hosting the context menu is gone. Restore focus once tvOS has
             // returned it to the app, after the menu's own dismissal animation.
@@ -135,7 +147,7 @@ struct RoomDJView: View {
                 restoreQueueFocus()
             }
         }
-        .sheet(isPresented: $selectingLanguage) {
+        .sheet(isPresented: $selectingLanguage, onDismiss: { sheetVisible = false }) {
             VStack(alignment: .leading, spacing: 22) {
                 RoomShelfTitle(title: "Song language")
                 languageChoice(nil)
@@ -146,6 +158,7 @@ struct RoomDJView: View {
             }
             .buttonStyle(RoomToolbarStyle())
             .padding(46).frame(width: 1160)
+            .onAppear { sheetVisible = true }
         }
     }
 

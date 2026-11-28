@@ -243,6 +243,17 @@ final class freeTubeNavigationTests: XCTestCase {
 
         let queuedID = upcoming.firstMatch.identifier
         selectWithRemote(app.buttons[queuedID], in: app)
+        XCTAssertTrue(app.buttons["dj-play-now"].waitForExistence(timeout: 5))
+        let mini = app.buttons["mini-expand"]
+        remote.press(.playPause, forDuration: 1)
+        XCTAssertTrue(mini.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["native-playback"].waitForExistence(timeout: 5))
+        remote.press(.playPause, forDuration: 1)
+        XCTAssertTrue(mini.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Now playing"].waitForExistence(timeout: 5))
+        XCTAssertTrue(now.exists, "Returning to DJ should keep the current song playing.")
+        XCTAssertFalse(app.buttons["dj-play-now"].exists)
+        selectWithRemote(app.buttons[queuedID], in: app)
         let remove = app.buttons["dj-remove-upcoming"]
         XCTAssertTrue(remove.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["dj-play-next"].exists)

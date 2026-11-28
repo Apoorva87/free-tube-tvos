@@ -79,6 +79,10 @@ struct RoomSearchView: View {
                     Button { showAsk = true } label: { Label("Ask AI", systemImage: "sparkles") }
                         .accessibilityIdentifier("search-ask-ai")
                 }
+                if query.isEmpty && submitted.isEmpty {
+                    Text("For voice search, select the field and hold the Siri button while you speak.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if !history.terms.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 20) {

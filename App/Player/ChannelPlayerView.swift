@@ -91,6 +91,7 @@ struct ChannelPlayerView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.black)
+        .background(PlaybackPresentationShortcut(session: session, presentation: mini ? .mini : .full))
         .clipShape(RoundedRectangle(cornerRadius: mini ? 14 : 0))
         .overlay { if mini { RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.35), lineWidth: 1) } }
         .ignoresSafeArea(edges: mini ? [] : .all)
@@ -154,7 +155,7 @@ private struct NativePlayer: UIViewControllerRepresentable {
         var next: ChannelVideo?
         var configuredSpeed: Float?
         var showingSheet = false
-        let shade = PlaybackOverlay()
+        let shade = UIView()
         let scanGestures: RoomScanGestures
         weak var similarOverlay: UIViewController?
 
@@ -201,7 +202,6 @@ private struct NativePlayer: UIViewControllerRepresentable {
         if !miniature { context.coordinator.scanGestures.install(on: controller) }
         if let overlay = controller.contentOverlayView {
             let shade = context.coordinator.shade
-            shade.togglePresentation = miniature ? session.expand : session.minimize
             shade.frame = overlay.bounds
             shade.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             shade.backgroundColor = .black
@@ -263,38 +263,61 @@ private struct NativePlayer: UIViewControllerRepresentable {
     }
 }
 
-// While browsing, focus belongs to the catalog. The player's window sees the
-// remote button in either presentation, including when the small player has no focus.
-private final class PlaybackOverlay: UIView, UIGestureRecognizerDelegate {
-    var togglePresentation: (() -> Void)?
-    private lazy var playPauseHold: UILongPressGestureRecognizer = {
-        let gesture = UILongPressGestureRecognizer(target: self, action: #selector(heldPlayPause))
-        gesture.allowedPressTypes = [NSNumber(value: UIPress.PressType.playPause.rawValue)]
-        gesture.minimumPressDuration = 0.65
-        gesture.delaysTouchesBegan = true
-        gesture.delegate = self
-        return gesture
-    }()
+// DJ starts in the mini-player before AVKit has a picture. Keep remote input
+// attached to the presentation even while AVKit replaces its video overlay.
+private struct PlaybackPresentationShortcut: UIViewRepresentable {
+    let session: RoomViewingSession
+    let presentation: RoomViewingSession.Presentation
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        playPauseHold.view?.removeGestureRecognizer(playPauseHold)
-        window?.addGestureRecognizer(playPauseHold)
+    func makeUIView(context: Context) -> Anchor {
+        let view = Anchor()
+        view.isUserInteractionEnabled = false
+        return view
     }
 
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        false
+    func updateUIView(_ view: Anchor, context: Context) {
+        view.session = session
+        view.presentation = presentation
     }
 
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                           shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
-        // SwiftUI routes the browsing screen's short press through a shared recognizer.
-        other.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.playPause.rawValue))
-    }
+    final class Anchor: UIView, UIGestureRecognizerDelegate {
+        weak var session: RoomViewingSession?
+        var presentation = RoomViewingSession.Presentation.closed
 
-    @objc private func heldPlayPause(_ gesture: UILongPressGestureRecognizer) {
-        // Changing views on release keeps this press from reaching the newly visible controls.
-        if gesture.state == .ended { togglePresentation?() }
+        private lazy var hold: UILongPressGestureRecognizer = {
+            let gesture = UILongPressGestureRecognizer(target: self, action: #selector(heldPlayPause))
+            gesture.allowedPressTypes = [NSNumber(value: UIPress.PressType.playPause.rawValue)]
+            gesture.allowedTouchTypes = []
+            gesture.minimumPressDuration = 0.65
+            gesture.delaysTouchesBegan = true
+            gesture.delegate = self
+            return gesture
+        }()
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            hold.view?.removeGestureRecognizer(hold)
+            window?.addGestureRecognizer(hold)
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
+            // Both surfaces can share the window briefly during a presentation transition.
+            press.type == .playPause && session?.presentation == presentation
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            other.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.playPause.rawValue))
+        }
+
+        @objc private func heldPlayPause(_ gesture: UILongPressGestureRecognizer) {
+            guard gesture.state == .ended, let session, session.presentation == presentation else { return }
+            switch presentation {
+            case .mini: session.expand()
+            case .full: session.browseDuringPlayback()
+            case .closed: break
+            }
+        }
     }
 }
 

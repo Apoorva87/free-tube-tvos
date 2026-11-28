@@ -72,6 +72,7 @@ private struct RoomShell: View {
     @State private var history = RoomWatchHistoryStore()
     @State private var recentSearches = RoomSearchHistory()
     @State private var systemSearch: RoomSystemSearch.Request?
+    @State private var djSheetVisible = false
     @State private var section = RoomSection.discover
     @State private var chosenCategory: RoomDiscoverCategory?
     @State private var categoryCatalog = RoomCategoryCatalog()
@@ -113,6 +114,11 @@ private struct RoomShell: View {
         }
     }
 
+    private var showsFullScreenPlayer: Bool {
+        // SwiftUI can present the player once the DJ sheet finishes dismissing.
+        viewing.presentation == .full && (section != .dj || !djSheetVisible)
+    }
+
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             browse
@@ -132,8 +138,8 @@ private struct RoomShell: View {
             if player.timeControlStatus == .paused { player.play() } else { player.pause() }
         } : nil)
         .fullScreenCover(isPresented: Binding(
-            get: { viewing.presentation == .full },
-            set: { if !$0, viewing.presentation == .full { viewing.close() } }
+            get: { showsFullScreenPlayer },
+            set: { if !$0, showsFullScreenPlayer { viewing.close() } }
         )) {
             ChannelPlayerView(session: viewing, mini: false)
         }
@@ -189,7 +195,8 @@ private struct RoomShell: View {
                             RoomWatchHistoryView(store: history, focus: $focus, play: onPlay, browse: { choose(.home) })
                         case .dj:
                             RoomDJView(history: history.videos, preferences: preferences, music: categoryCatalog.music,
-                                       interestFeed: interestFeed, focus: $focus, openMenu: { menuOpen = true })
+                                       interestFeed: interestFeed, focus: $focus, openMenu: { menuOpen = true },
+                                       sheetVisible: $djSheetVisible)
                                 .environment(\.fetchTileFacts, false)
                         case .search:
                             RoomSearchView(account: account, library: library, history: recentSearches, systemSearch: $systemSearch, focus: $focus, open: { channel = $0 },
