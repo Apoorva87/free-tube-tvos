@@ -854,6 +854,25 @@ final class freeTubeNavigationTests: XCTestCase {
         }
     }
 
+    func testHoldPlayPauseTogglesPictureInPicture() throws {
+        continueAfterFailure = false
+        let app = try playFeaturedMovie()
+        let remote = XCUIRemote.shared
+        let expand = app.buttons["mini-expand"]
+        remote.press(.playPause, forDuration: 1.0)
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "Holding Play/Pause should open the mini-player.")
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-search"], in: app)
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
+        remote.press(.playPause)
+        XCTAssertTrue(expand.exists, "A short press should keep the mini-player open.")
+        remote.press(.playPause, forDuration: 1.0)
+        XCTAssertTrue(expand.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["native-playback"].waitForExistence(timeout: 5))
+        remote.press(.playPause)
+        XCTAssertFalse(expand.exists, "A short press should keep the full-screen player open.")
+    }
+
     func testMovieKeepsPlayingWhileBrowsingAndSearching() async throws {
         continueAfterFailure = false
         let app = try playFeaturedMovie()
