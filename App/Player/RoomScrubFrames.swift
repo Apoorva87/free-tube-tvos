@@ -44,11 +44,39 @@ struct RoomStoryboard {
         self.level = level
     }
 
-    func tile(at seconds: Double, duration: Double) -> Tile? {
+    private func frameStart(_ index: Int, duration: Double) -> Double {
+        if level.milliseconds > 0 { return Double(index * level.milliseconds) / 1000 }
+        return Double(index) / Double(level.count) * duration
+    }
+
+    private func frameIndex(at seconds: Double, duration: Double) -> Int? {
         guard seconds.isFinite else { return nil }
-        let step = level.milliseconds > 0 ? Double(level.milliseconds) / 1000 : duration / Double(level.count)
-        guard step.isFinite, step > 0 else { return nil }
-        let frame = Int(min(Double(level.count - 1), max(0, seconds) / step))
+        let position: Double
+        if level.milliseconds > 0 {
+            position = max(0, seconds) * 1000 / Double(level.milliseconds)
+        } else {
+            guard duration.isFinite, duration > 0 else { return nil }
+            position = max(0, seconds) / duration * Double(level.count)
+        }
+        let index = Int(min(Double(level.count - 1), position))
+        // Match the published range at fractional boundaries despite rounding in the inverse calculation.
+        if index + 1 < level.count, seconds >= frameStart(index + 1, duration: duration) { return index + 1 }
+        if index > 0, seconds < frameStart(index, duration: duration) { return index - 1 }
+        return index
+    }
+
+    func frameRange(at seconds: Double, duration: Double) -> Range<Double>? {
+        guard let index = frameIndex(at: seconds, duration: duration) else { return nil }
+        let end = duration.isFinite ? duration : frameStart(level.count, duration: duration)
+        guard seconds >= 0, seconds < end else { return nil }
+        let start = frameStart(index, duration: duration)
+        // Once all published cells have been consumed, the last tile covers the rest of the recording.
+        let limit = index == level.count - 1 ? end : min(end, frameStart(index + 1, duration: duration))
+        return start..<limit
+    }
+
+    func tile(at seconds: Double, duration: Double) -> Tile? {
+        guard let frame = frameIndex(at: seconds, duration: duration) else { return nil }
         let perSheet = level.columns * level.rows
         let cell = frame % perSheet
         let address = template.replacingOccurrences(of: "$L", with: String(level.index))
@@ -105,6 +133,11 @@ final class RoomScrubFrames {
     func canPreview(_ item: AVPlayerItem) -> Bool {
         let source = source(for: item)
         return (source.board != nil && !source.boardFailed) || (!source.assetFailed && canGenerate(item))
+    }
+
+    func frameRange(for item: AVPlayerItem, at seconds: Double) -> Range<Double>? {
+        guard let source = sources.object(forKey: item), !source.boardFailed else { return nil }
+        return source.board?.frameRange(at: seconds, duration: item.duration.seconds)
     }
 
     func image(for item: AVPlayerItem, at seconds: Double) async -> CGImage? {

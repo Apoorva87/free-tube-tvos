@@ -1,15 +1,31 @@
 import AVFoundation
 import CoreGraphics
 
-/// Browses frames independently of playback. Releasing selects the last picture actually shown.
+/// Browses independently of playback and makes one seek to the released position after its artwork is available.
 @MainActor
 final class RoomVideoScanner {
     struct Preview {
         let image: CGImage
         let time: Double
         let fraction: Double
+        let loading: Bool
+
+        var timestamp: String {
+            let tenths = max(0, Int((time * 10).rounded()))
+            let seconds = tenths / 10
+            return seconds >= 3600 ? String(format: "%d:%02d:%02d.%d", seconds / 3600, seconds / 60 % 60, seconds % 60, tenths % 10)
+                                   : String(format: "%d:%02d.%d", seconds / 60, seconds % 60, tenths % 10)
+        }
     }
 
+    private struct Frame {
+        let image: CGImage
+        let time: Double
+        let range: Range<Double>?
+        func covers(_ position: Double) -> Bool { time == position || range?.contains(position) == true }
+    }
+
+    private let frameRange: @MainActor (AVPlayerItem, Double) -> Range<Double>?
     private let canPreview: @MainActor (AVPlayerItem) -> Bool
     private let image: @MainActor (AVPlayerItem, Double) async -> CGImage?
     private weak var player: AVPlayer?
@@ -20,16 +36,22 @@ final class RoomVideoScanner {
     private var worker: Task<Void, Never>?
     private var present: ((Preview?) -> Void)?
     private var presentationActive: (() -> Bool)?
-    private var coldRelease: (rate: Float, position: Double)?
+    private var coldRelease: (rate: Float, position: Double, uptime: TimeInterval)?
     private var releaseDeadline: Task<Void, Never>?
     private var bounds: ClosedRange<Double> = 0...0
     private var duration = 0.0
     private var target = 0.0
     private var displayedTime: Double?
+    private var recentFrames: [Frame] = []
+    private var previousDirection = 0.0
+    private var requestID = 0
+    private var requestedTime: Double?
     private var generation = 0
     var busy: Bool { item != nil }
 
-    init(canPreview: @escaping @MainActor (AVPlayerItem) -> Bool, image: @escaping @MainActor (AVPlayerItem, Double) async -> CGImage?) {
+    init(canPreview: @escaping @MainActor (AVPlayerItem) -> Bool, image: @escaping @MainActor (AVPlayerItem, Double) async -> CGImage?,
+         frameRange: @escaping @MainActor (AVPlayerItem, Double) -> Range<Double>? = { _, _ in nil }) {
+        self.frameRange = frameRange
         self.canPreview = canPreview
         self.image = image
     }
@@ -74,55 +96,95 @@ final class RoomVideoScanner {
         guard busy, coldRelease == nil, seconds.isFinite else { return }
         let next = min(bounds.upperBound, max(bounds.lowerBound, target + seconds))
         guard next != target else { return }
+        let direction = next > target ? 1.0 : -1.0
+        let reversed = previousDirection != 0 && previousDirection != direction
+        previousDirection = direction
         target = next
-        if worker == nil {
-            let visit = generation
-            worker = Task { [weak self] in await self?.showFrames(visit: visit) }
+        if let frame = recentFrames.last(where: { $0.covers(next) }) {
+            cancelRequest()
+            show(frame, at: next)
+            return
         }
+        if let frame = recentFrames.last, displayedTime != nil {
+            // The destination and clock follow the finger even when a new sheet is still loading.
+            present?(Preview(image: frame.image, time: next, fraction: next / duration, loading: true))
+        }
+        if reversed { cancelRequest() }
+        requestFrame()
     }
 
-    private func showFrames(visit: Int) async {
-        while generation == visit, !Task.isCancelled {
+    private func requestFrame() {
+        guard worker == nil else { return }
+        let id = requestID
+        worker = Task { [weak self] in await self?.showFrames(id: id) }
+    }
+
+    private func cancelRequest() {
+        requestID &+= 1
+        worker?.cancel()
+        worker = nil
+        requestedTime = nil
+    }
+
+    private func show(_ frame: Frame, at time: Double) {
+        displayedTime = time
+        present?(Preview(image: frame.image, time: time, fraction: time / duration, loading: false))
+    }
+
+    private func showFrames(id: Int) async {
+        while requestID == id, !Task.isCancelled {
             guard let item, player?.currentItem === item, monitor?.events.isEmpty == true else { stop(); return }
             let time = target
-            let frame = await image(item, time)
-            guard generation == visit, !Task.isCancelled else { return }
+            requestedTime = time
+            let bitmap = await image(item, time)
+            guard requestID == id, !Task.isCancelled else { return }
             guard player?.currentItem === item, presentationActive?() == true else { stop(); return }
-            if coldRelease != nil, target != time { continue }
-            guard let frame else {
+            guard let bitmap else {
+                if target != time { continue }
                 failedItem = item
                 retryAfter = .now + .seconds(30)
                 stop()
                 return
             }
-            // Keep the timestamp and position tied to the decoded image even on a slow connection.
-            displayedTime = time
-            present?(Preview(image: frame, time: time, fraction: time / duration))
+            let frame = Frame(image: bitmap, time: time, range: frameRange(item, time))
+            if recentFrames.count == 2 { recentFrames.removeFirst() }
+            recentFrames.append(frame)
+            if frame.covers(target) {
+                show(frame, at: target)
+            } else {
+                // A coalesced lookup can finish after the finger has passed that tile. Fetch the latest target next.
+                if displayedTime == nil, coldRelease == nil {
+                    present?(Preview(image: bitmap, time: target, fraction: target / duration, loading: true))
+                }
+                continue
+            }
             if coldRelease != nil {
                 releaseDeadline?.cancel()
-                // A short swipe can finish before its first sheet arrives. Show the selection before landing on it.
-                try? await Task.sleep(for: .milliseconds(110))
-                guard generation == visit else { return }
+                try? await Task.sleep(for: .milliseconds(90))
+                guard requestID == id else { return }
                 commit()
                 return
             }
-            try? await Task.sleep(for: .milliseconds(100))
-            guard generation == visit else { return }
-            if target == time { worker = nil; return }
+            try? await Task.sleep(for: .milliseconds(60))
+            guard requestID == id else { return }
+            if displayedTime == target { worker = nil; requestedTime = nil; return }
         }
     }
 
     func finish() {
         guard busy, coldRelease == nil else { return }
-        if displayedTime != nil { commit(); return }
-        guard worker != nil, let player else { stop(); return }
-        coldRelease = (player.rate, player.currentTime().seconds)
+        if displayedTime == target { commit(); return }
+        guard previousDirection != 0, let player else { stop(); return }
+        coldRelease = (player.rate, player.currentTime().seconds, ProcessInfo.processInfo.systemUptime)
+        let wait: Duration = displayedTime == nil ? .milliseconds(550) : .milliseconds(1200)
         let visit = generation
         releaseDeadline = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(550)) } catch { return }
+            do { try await Task.sleep(for: wait) } catch { return }
             guard let self, generation == visit else { return }
             stop()
         }
+        if requestedTime != target { cancelRequest() }
+        requestFrame()
     }
 
     func cancelPendingRelease() {
@@ -130,12 +192,15 @@ final class RoomVideoScanner {
     }
 
     private func commit() {
-        guard let selected = item, let player, player.currentItem === selected, let time = displayedTime,
+        guard let selected = item, let player, player.currentItem === selected, let time = displayedTime, time == target,
               monitor?.events.isEmpty == true, presentationActive?() == true else { stop(); return }
-        if let released = coldRelease,
-           player.rate != released.rate || abs(player.currentTime().seconds - released.position) > 2 {
-            stop()
-            return
+        if let released = coldRelease {
+            let elapsed = ProcessInfo.processInfo.systemUptime - released.uptime
+            let advanced = player.currentTime().seconds - released.position
+            guard player.rate == released.rate, advanced >= -0.35, advanced <= Double(released.rate) * elapsed + 0.65 else {
+                stop()
+                return
+            }
         }
         stop()
         selected.seek(to: CMTime(seconds: time, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: nil)
@@ -147,14 +212,52 @@ final class RoomVideoScanner {
         releaseDeadline = nil
         coldRelease = nil
         presentationActive = nil
-        worker?.cancel()
-        worker = nil
+        cancelRequest()
+        recentFrames.removeAll(keepingCapacity: true)
+        previousDirection = 0
         present?(nil)
         present = nil
         item = nil
         player = nil
         monitor = nil
         displayedTime = nil
+    }
+}
+
+/// Finger movement is fine at low velocity. A sustained hold gathers speed after its first second.
+enum RoomScrubMotion {
+    static func seconds(forPoints points: Double, velocity: Double) -> Double {
+        let phase = min(1, max(0, (abs(velocity) - 200) / 1600))
+        let acceleration = phase * phase * (3 - 2 * phase)
+        return points * (0.0125 + 0.1375 * acceleration)
+    }
+
+    static func holdSpeed(after elapsed: Double) -> Double {
+        let accelerating = max(0, elapsed - 1.25)
+        return min(60, 2 + 1.75 * accelerating * accelerating)
+    }
+}
+
+/// The card can slide inwards at either edge, but both pointers stay on the selected timeline coordinate.
+struct RoomScrubPlacement {
+    let card: CGRect
+    let destination: CGPoint
+
+    init(screen: CGRect, measuredTrack: CGRect?, fraction: Double, controlsVisible: Bool) {
+        let track = measuredTrack ?? CGRect(x: screen.minX + screen.width / 24, y: screen.minY + screen.height * 0.843,
+                                             width: screen.width * 11 / 12, height: 0)
+        let x = track.minX + CGFloat(min(1, max(0, fraction))) * track.width
+        destination = CGPoint(x: x, y: track.midY)
+        let width = min(272, track.width * 0.25)
+        let height = width * 9 / 16 + 36
+        let left = max(screen.minX, track.minX - 18)
+        let right = min(screen.maxX, track.maxX + 18)
+        let cardX = min(right - width, max(left, x - width / 2))
+        var bottom = screen.minY + screen.height * (controlsVisible ? 0.72 : 0.82)
+        if controlsVisible, measuredTrack != nil {
+            bottom = min(screen.minY + 0.74 * screen.height, max(screen.minY + 0.70 * screen.height, track.midY - 0.12 * screen.height))
+        }
+        card = CGRect(x: cardX, y: max(screen.minY, bottom - height), width: width, height: height)
     }
 }
 
@@ -289,12 +392,14 @@ final class RoomScanGestures: NSObject, UIGestureRecognizerDelegate {
             fallthrough
         case .changed:
             guard activeGesture === pan else { return }
-            let secondsPerPoint = 0.055 + 0.25 * min(1, abs(velocityX) / 1800)
-            scanner.move(by: Double((x - lastX) * secondsPerPoint))
+            scanner.move(by: RoomScrubMotion.seconds(forPoints: Double(x - lastX), velocity: Double(velocityX)))
             lastX = x
         case .ended, .cancelled, .failed:
             guard activeGesture === pan else { return }
-            if state == .ended { scanner.finish() } else { scanner.stop() }
+            if state == .ended {
+                scanner.move(by: RoomScrubMotion.seconds(forPoints: Double(x - lastX), velocity: Double(velocityX)))
+                scanner.finish()
+            } else { scanner.stop() }
             activeGesture = nil
         default: break
         }
@@ -313,10 +418,10 @@ final class RoomScanGestures: NSObject, UIGestureRecognizerDelegate {
                 var previous = start
                 while let self, scanner.busy, !Task.isCancelled {
                     let now = ProcessInfo.processInfo.systemUptime
-                    let speed: Double = now - start > 2 ? 50 : 20
+                    let speed = RoomScrubMotion.holdSpeed(after: now - start)
                     scanner.move(by: direction * speed * min(0.25, now - previous))
                     previous = now
-                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                    do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
                 }
             }
         case .ended, .cancelled, .failed:
@@ -335,6 +440,9 @@ final class RoomScanGestures: NSObject, UIGestureRecognizerDelegate {
 private final class RoomScrubPreview: UIView {
     private let picture = UIImageView()
     private let clock = UILabel()
+    private let spinner = UIActivityIndicatorView(style: .medium)
+    private let pointer = UIImageView(image: UIImage(systemName: "arrowtriangle.down.fill"))
+    private let cursor = UIView()
 
     init() {
         super.init(frame: .zero)
@@ -357,54 +465,92 @@ private final class RoomScrubPreview: UIView {
         clock.font = .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
         addSubview(picture)
         addSubview(clock)
+        spinner.hidesWhenStopped = true
+        spinner.color = .white
+        addSubview(spinner)
+        let accent = UIColor(red: 0.41, green: 0.92, blue: 1, alpha: 1)
+        pointer.tintColor = accent
+        pointer.contentMode = .scaleAspectFit
+        pointer.accessibilityIdentifier = "scrub-preview-pointer"
+        cursor.accessibilityIdentifier = "scrub-preview-cursor"
+        cursor.backgroundColor = accent
+        cursor.layer.cornerRadius = 3
+        cursor.layer.borderWidth = 1
+        cursor.layer.borderColor = UIColor.black.cgColor
+        for marker in [pointer as UIView, cursor] {
+            marker.isUserInteractionEnabled = false
+            marker.isHidden = true
+            marker.layer.shadowColor = UIColor.black.cgColor
+            marker.layer.shadowOpacity = 0.9
+            marker.layer.shadowRadius = 2
+            marker.layer.shadowOffset = CGSize(width: 0, height: 1)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        for marker in [pointer as UIView, cursor] {
+            marker.removeFromSuperview()
+            superview?.addSubview(marker)
+        }
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         picture.frame = CGRect(x: 2, y: 2, width: bounds.width - 4, height: bounds.height - 36)
         clock.frame = CGRect(x: 2, y: picture.frame.maxY, width: bounds.width - 4, height: 32)
+        spinner.center = picture.center
     }
 
     func show(_ preview: RoomVideoScanner.Preview, in controller: AVPlayerViewController, controlsVisible: Bool) {
         guard let parent = superview else { return }
         let screen = controller.view.bounds
         guard screen.width > 0, screen.height > 0 else { return }
-        // AVKit’s timeline spans the playback window, including letterboxed video. Only its horizontal safe margins apply.
-        let edges = controller.view.safeAreaInsets
-        let left = screen.minX + max(edges.left, screen.width * 0.04)
-        let right = screen.maxX - max(edges.right, screen.width * 0.04)
-        let width = min(272, (right - left) * 0.25)
-        let height = width * 9 / 16 + 36
-        let fraction = CGFloat(min(1, max(0, preview.fraction)))
-        let x = min(right - width, max(left, left + fraction * (right - left) - width / 2))
-        var bottom = screen.minY + screen.height * (controlsVisible ? 0.72 : 0.82)
-        if controlsVisible, let focused = UIFocusSystem.focusSystem(for: controller)?.focusedItem as? UIView,
-           focused.accessibilityTraits.contains(.adjustable), focused.isDescendant(of: controller.view) {
-            let track = controller.view.convert(focused.bounds, from: focused)
-            if track.width > screen.width * 0.45, track.height < screen.height * 0.16,
-               (screen.minY + 0.75 * screen.height ... screen.minY + 0.95 * screen.height).contains(track.midY) {
-                // Keep the entire row of transport actions under the preview clear, including at right-hand targets.
-                bottom = min(screen.minY + 0.74 * screen.height, max(screen.minY + 0.70 * screen.height, track.midY - 0.12 * screen.height))
-            }
-        }
-        let windowFrame = CGRect(x: x, y: max(screen.minY, bottom - height), width: width, height: height)
-        frame = parent.convert(windowFrame, from: controller.view).integral
+        let track = controlsVisible ? focusedTrack(in: controller) : nil
+        let placement = RoomScrubPlacement(screen: screen, measuredTrack: track, fraction: preview.fraction, controlsVisible: controlsVisible)
+        frame = parent.convert(placement.card, from: controller.view).integral
+        let point = parent.convert(placement.destination, from: controller.view)
+        pointer.bounds.size = CGSize(width: 19, height: 11)
+        pointer.center = CGPoint(x: point.x, y: frame.maxY + pointer.bounds.midY)
+        cursor.bounds.size = CGSize(width: 7, height: 24)
+        cursor.center = point
+        pointer.isHidden = false
+        cursor.isHidden = !controlsVisible
         if isHidden {
             setNeedsLayout()
             layoutIfNeeded()
         }
-        picture.image = UIImage(cgImage: preview.image)
-        let value = max(0, Int(preview.time))
-        clock.text = value >= 3600 ? String(format: "%d:%02d:%02d", value / 3600, value / 60 % 60, value % 60)
-                                   : String(format: "%d:%02d", value / 60, value % 60)
+        picture.isHidden = preview.loading
+        if preview.loading { spinner.startAnimating() }
+        else {
+            spinner.stopAnimating()
+            if picture.image?.cgImage !== preview.image { picture.image = UIImage(cgImage: preview.image) }
+        }
+        clock.text = preview.timestamp
+        parent.bringSubviewToFront(cursor)
+        parent.bringSubviewToFront(pointer)
         parent.bringSubviewToFront(self)
         isHidden = false
     }
 
+    private func focusedTrack(in controller: AVPlayerViewController) -> CGRect? {
+        guard let focused = UIFocusSystem.focusSystem(for: controller)?.focusedItem as? UIView,
+              focused.accessibilityTraits.contains(.adjustable), focused.isDescendant(of: controller.view) else { return nil }
+        let screen = controller.view.bounds
+        let track = controller.view.convert(focused.bounds, from: focused)
+        guard track.width > screen.width * 0.45, track.height < screen.height * 0.16,
+              screen.contains(track), (screen.minY + 0.75 * screen.height ... screen.minY + 0.95 * screen.height).contains(track.midY)
+        else { return nil }
+        return track
+    }
+
     func hide() {
         isHidden = true
+        pointer.isHidden = true
+        cursor.isHidden = true
+        spinner.stopAnimating()
         picture.image = nil
         clock.text = nil
     }

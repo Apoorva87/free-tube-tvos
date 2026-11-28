@@ -206,6 +206,7 @@ private struct NativePlayer: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== session.playback.player { controller.player = session.playback.player }
+        session.updateSystemNextCommand()
         controller.showsPlaybackControls = !miniature
         controller.view.isUserInteractionEnabled = !miniature
         let coordinator = context.coordinator
@@ -294,7 +295,8 @@ final class ChannelPlayback {
     enum Phase: Equatable { case loading, playing, finished, failed(String) }
     var phase = Phase.loading
     @ObservationIgnored let scrubFrames = RoomScrubFrames()
-    @ObservationIgnored lazy var scanner = RoomVideoScanner(canPreview: scrubFrames.canPreview, image: scrubFrames.image)
+    @ObservationIgnored lazy var scanner = RoomVideoScanner(canPreview: scrubFrames.canPreview, image: scrubFrames.image,
+                                                            frameRange: scrubFrames.frameRange)
     var canScanVideo: Bool { phase == .playing && audioFadeFraction == 0 }
     private(set) var rateLimited = false
     @ObservationIgnored var onRateLimited: ((Date) -> Void)?

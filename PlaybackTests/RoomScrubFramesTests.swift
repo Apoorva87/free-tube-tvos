@@ -37,6 +37,43 @@ final class RoomScrubFramesTests: XCTestCase {
         XCTAssertNil(fixed.tile(at: .nan, duration: 10))
     }
 
+    func testFrameRangeUsesTheSelectedCellAndClipsItsLastPartialInterval() throws {
+        let timed = try XCTUnwrap(RoomStoryboard(spec: base + "|80#45#50#5#5#1000#M$M#low|160#90#6#2#2#5000#M$M#high"))
+        XCTAssertEqual(timed.frameRange(at: 4.999, duration: 27.5), 0..<5)
+        XCTAssertEqual(timed.frameRange(at: 5, duration: 27.5), 5..<10)
+        XCTAssertEqual(timed.frameRange(at: 20, duration: 27.5), 20..<25)
+        XCTAssertEqual(timed.frameRange(at: 27.49, duration: 27.5), 25..<27.5)
+        XCTAssertNil(timed.frameRange(at: 27.5, duration: 27.5))
+        XCTAssertEqual(timed.frameRange(at: 32, duration: 34), 25..<34)
+        XCTAssertEqual(timed.frameRange(at: 7.1, duration: .nan), 5..<10)
+        XCTAssertNil(timed.frameRange(at: .infinity, duration: 27.5))
+        let subsecond = try XCTUnwrap(RoomStoryboard(spec: base + "|160#90#6#3#2#100#M$M#x"))
+        XCTAssertEqual(subsecond.frameRange(at: 0.3, duration: 0.6), 0.3..<0.4)
+        XCTAssertEqual(subsecond.tile(at: 0.3, duration: 0.6)?.rect, CGRect(x: 0, y: 90, width: 160, height: 90))
+
+        let fixed = try XCTUnwrap(RoomStoryboard(spec: base + "|2#1#4#2#2#0#default#x"))
+        XCTAssertEqual(fixed.frameRange(at: 2.499, duration: 10), 0..<2.5)
+        XCTAssertEqual(fixed.frameRange(at: 2.5, duration: 10), 2.5..<5)
+        XCTAssertEqual(fixed.frameRange(at: 9.999, duration: 10), 7.5..<10)
+        XCTAssertNil(fixed.frameRange(at: 2, duration: .nan))
+    }
+
+    func testQueryingFrameRangesDoesNotFetchSheets() async {
+        let gate = SheetFixture(bytes: Data())
+        await gate.release()
+        let frames = RoomScrubFrames(loadSheet: { await gate.load($0) })
+        let item = item()
+        XCTAssertNil(frames.frameRange(for: item, at: 0))
+        frames.register(item, storyboardSpec: base + "|" + level)
+        for second in 0..<6 {
+            for fraction in [0.0, 0.01, 0.98] {
+                XCTAssertEqual(frames.frameRange(for: item, at: Double(second) + fraction), Double(second)..<Double(second + 1))
+            }
+        }
+        let count = await gate.count
+        XCTAssertEqual(count, 0)
+    }
+
     func testConcurrentTilesShareOneSheetAndCancelledReaderCannotPublish() async throws {
         let sheet = try makeSheet()
         let gate = SheetFixture(bytes: sheet)
@@ -81,6 +118,7 @@ final class RoomScrubFramesTests: XCTestCase {
         let failed = await failing.image(for: item, at: 1)
         XCTAssertNil(failed)
         XCTAssertFalse(failing.canPreview(item))
+        XCTAssertNil(failing.frameRange(for: item, at: 1))
         let again = await failing.image(for: item, at: 5)
         XCTAssertNil(again)
         let count = await bad.count
@@ -111,6 +149,7 @@ final class RoomScrubFramesTests: XCTestCase {
         let frames = RoomScrubFrames(loadSheet: { _ in XCTFail("A local movie needs no sheet"); return Data() })
         let item = AVPlayerItem(url: file)
         XCTAssertTrue(frames.canPreview(item))
+        XCTAssertNil(frames.frameRange(for: item, at: 1), "Asset-generated frames are independent at each target")
         let blueFrame = await frames.image(for: item, at: 0)
         let redFrame = await frames.image(for: item, at: 1.1)
         let blue = try pixel(XCTUnwrap(blueFrame)), red = try pixel(XCTUnwrap(redFrame))

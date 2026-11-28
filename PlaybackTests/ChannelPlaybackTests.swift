@@ -1,4 +1,5 @@
 import AVFoundation
+import MediaPlayer
 import UIKit
 import XCTest
 @testable import freeTube
@@ -746,6 +747,28 @@ extension ChannelPlaybackTests {
         }
         let requestCount = await calls.calls
         XCTAssertEqual(requestCount, 1)
+    }
+
+    func testSystemNextAdvancesTheActiveQueueInFullAndMiniPlayers() async throws {
+        let file = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: file) }
+        let songs = ["First", "Second", "Third"].map { djSong($0, $0) }
+        let session = RoomViewingSession(playback: ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: file) }))
+        defer { session.close() }
+        XCTAssertEqual(session.handleSystemNext(), .noActionableNowPlayingItem)
+        session.openPlaylist(songs[0], in: songs)
+        try await djWait("the first item to start") { session.playback.player.timeControlStatus == .playing }
+        XCTAssertEqual(session.handleSystemNext(), .success)
+        XCTAssertEqual(session.video?.id, songs[1].id)
+        try await djWait("the second item to start") { session.playback.phase == .playing }
+        session.minimize()
+        XCTAssertEqual(session.presentation, .mini)
+        let result = await Task.detached { session.handleSystemNext() }.value
+        XCTAssertEqual(result, .success)
+        XCTAssertEqual(session.video?.id, songs[2].id)
+        XCTAssertEqual(session.handleSystemNext(), .noSuchContent)
+        session.close()
+        XCTAssertEqual(session.handleSystemNext(), .noActionableNowPlayingItem)
     }
 
     func testNaturalHandoffDismissesPreviewAndReleaseCannotSeekTheNextSong() async throws {

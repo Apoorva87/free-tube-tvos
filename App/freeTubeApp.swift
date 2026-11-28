@@ -1,3 +1,5 @@
+import AVFAudio
+import OSLog
 import SwiftUI
 
 @main
@@ -9,6 +11,14 @@ struct freeTubeApp: App {
     @State private var playlists = RoomPlaylistStore()
     @State private var helper = RoomAIHelper()
     @Environment(\.scenePhase) private var phase
+
+    init() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+        } catch {
+            Logger().error("Couldn’t configure the playback audio session: \(error.localizedDescription)")
+        }
+    }
 
     var body: some Scene {
         WindowGroup {

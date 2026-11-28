@@ -1,4 +1,5 @@
 import AVFoundation
+import MediaPlayer
 import Observation
 
 @MainActor @Observable
@@ -29,6 +30,7 @@ final class RoomViewingSession {
     private(set) var queueNotice: String?
     @ObservationIgnored private var noticeTimer: Task<Void, Never>?
     @ObservationIgnored private var loading: Task<Void, Never>?
+    @ObservationIgnored private var nextCommandTarget: Any?
 
     init(playback: ChannelPlayback = ChannelPlayback(), djStation: RoomDJStation = RoomDJStation(),
          recommendations: @escaping (ChannelVideo) async throws -> [ChannelVideo] = ChannelCatalog().similarVideos) {
@@ -239,8 +241,43 @@ final class RoomViewingSession {
         if !paused { player.rate = rate }
     }
 
-    func advance() {
-        guard next != nil, !djStation.isActive || djStation.requestsAllowed(userInitiated: true) else { return }
+    // AVKit handles play, pause and time-based Siri commands. The app owns the logical queue.
+    func updateSystemNextCommand() {
+        let available = presentation != .closed && next != nil
+        if !available {
+            removeSystemNextCommand()
+            return
+        }
+        let command = MPRemoteCommandCenter.shared().nextTrackCommand
+        if nextCommandTarget == nil {
+            nextCommandTarget = command.addTarget { @Sendable [weak self] _ in
+                self?.handleSystemNext() ?? .noActionableNowPlayingItem
+            }
+        }
+        if !command.isEnabled { command.isEnabled = true }
+    }
+
+    private func removeSystemNextCommand() {
+        guard let nextCommandTarget else { return }
+        let command = MPRemoteCommandCenter.shared().nextTrackCommand
+        command.removeTarget(nextCommandTarget)
+        command.isEnabled = false
+        self.nextCommandTarget = nil
+    }
+
+    nonisolated func handleSystemNext() -> MPRemoteCommandHandlerStatus {
+        let action: @MainActor () -> MPRemoteCommandHandlerStatus = {
+            guard self.presentation != .closed, self.video != nil else { return .noActionableNowPlayingItem }
+            guard self.next != nil else { return .noSuchContent }
+            return self.advance() ? .success : .commandFailed
+        }
+        if Thread.isMainThread { return MainActor.assumeIsolated { action() } }
+        return DispatchQueue.main.sync { action() }
+    }
+
+    @discardableResult
+    func advance() -> Bool {
+        guard next != nil, !djStation.isActive || djStation.requestsAllowed(userInitiated: true) else { return false }
         selectedDJTrackID = nil
         if quickCount > 0 { quickCount -= 1 }
         index += 1
@@ -249,6 +286,7 @@ final class RoomViewingSession {
             index = 0
         }
         beginPlayback(usePrepared: true)
+        return true
     }
 
     // Keep explicit picks at the front. Replace old recommendations as soon as
@@ -348,6 +386,7 @@ final class RoomViewingSession {
     }
 
     func close() {
+        removeSystemNextCommand()
         selectedDJTrackID = nil
         loadID = UUID()
         waitingForDJTrack = false

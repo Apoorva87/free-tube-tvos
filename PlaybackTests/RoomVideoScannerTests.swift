@@ -39,7 +39,7 @@ final class RoomVideoScannerTests: XCTestCase {
         let image = try testImage()
         let scanner = RoomVideoScanner(canPreview: { _ in true }, image: { _, _ in image })
         var times: [Double] = []
-        XCTAssertTrue(scanner.begin(on: player) { if let frame = $0 { times.append(frame.time) } })
+        XCTAssertTrue(scanner.begin(on: player) { if let frame = $0, !frame.loading { times.append(frame.time) } })
         scanner.move(by: 7)
         try await wait { !times.isEmpty }
         scanner.move(by: 8)
@@ -98,23 +98,23 @@ final class RoomVideoScannerTests: XCTestCase {
         XCTAssertLessThan(player.currentTime().seconds, 1.5)
     }
 
-    func testReleaseCommitsTheDisplayedFrameWhenANewerFrameIsPending() async throws {
+    func testReleaseWaitsForTheReversedTargetInsteadOfSeekingThePreviousFrame() async throws {
         let (player, file) = try await localPlayer()
         defer { player.pause(); try? FileManager.default.removeItem(at: file) }
         player.pause()
         let origin = player.currentTime().seconds
         let image = try testImage()
         let scanner = RoomVideoScanner(canPreview: { _ in true }, image: { _, seconds in
-            if seconds > 15 { try? await Task.sleep(for: .seconds(1)) }
+            if seconds < 15 { try? await Task.sleep(for: .milliseconds(120)) }
             return image
         })
         var frame: RoomVideoScanner.Preview?
         XCTAssertTrue(scanner.begin(on: player) { frame = $0 })
-        scanner.move(by: 10)
+        scanner.move(by: 20)
         try await wait { frame != nil }
-        scanner.move(by: 10)
+        scanner.move(by: -8)
         scanner.finish()
-        try await wait { abs(player.currentTime().seconds - origin - 10) < 0.2 }
+        try await wait { abs(player.currentTime().seconds - origin - 12) < 0.2 }
         XCTAssertNil(frame)
         XCTAssertEqual(player.rate, 0)
     }
@@ -174,6 +174,78 @@ final class RoomVideoScannerTests: XCTestCase {
         scanner.finish()
         try await wait { !scanner.busy }
         XCTAssertEqual(player.currentTime().seconds, origin, accuracy: 0.1)
+    }
+
+    func testSlowSwipesAndTheBeginningOfAHoldPermitSubsecondMoves() {
+        XCTAssertEqual(RoomScrubMotion.seconds(forPoints: 32, velocity: 110), 0.4, accuracy: 0.0001)
+        XCTAssertEqual(RoomScrubMotion.seconds(forPoints: -32, velocity: -190), -0.4, accuracy: 0.0001)
+        XCTAssertGreaterThan(RoomScrubMotion.seconds(forPoints: 100, velocity: 1800), 10)
+        XCTAssertEqual(RoomScrubMotion.holdSpeed(after: 0.25), 2)
+        XCTAssertEqual(RoomScrubMotion.holdSpeed(after: 1), 2)
+        XCTAssertGreaterThan(RoomScrubMotion.holdSpeed(after: 4), 10)
+        XCTAssertLessThanOrEqual(RoomScrubMotion.holdSpeed(after: 30), 60)
+    }
+
+    func testTimestampShowsTenthsThroughMinuteAndHourBoundaries() throws {
+        let bitmap = try testImage()
+        for (time, expected) in [(52.42, "0:52.4"), (59.98, "1:00.0"), (3601.26, "1:00:01.3")] {
+            let preview = RoomVideoScanner.Preview(image: bitmap, time: time, fraction: 0.5, loading: false)
+            XCTAssertEqual(preview.timestamp, expected)
+        }
+    }
+
+    func testPreviewClampsAtEachEdgeAndItsPointerKeepsTheActualTrackCoordinate() {
+        let screen = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let track = CGRect(x: 83, y: 902, width: 1754, height: 12)
+        for (fraction, x) in [(0.0, 83.0), (0.25, 521.5), (0.5, 960.0), (1.0, 1837.0)] {
+            let layout = RoomScrubPlacement(screen: screen, measuredTrack: track, fraction: fraction, controlsVisible: true)
+            XCTAssertTrue(screen.contains(layout.card))
+            XCTAssertEqual(layout.destination.x, x, accuracy: 0.001)
+            XCTAssertEqual(layout.destination.y, 908)
+            XCTAssertGreaterThanOrEqual(x, layout.card.minX + 9)
+            XCTAssertLessThanOrEqual(x, layout.card.maxX - 9)
+            if fraction == 0 || fraction == 1 { XCTAssertGreaterThan(abs(layout.card.midX - x), 100) }
+            else { XCTAssertEqual(layout.card.midX, x, accuracy: 0.001) }
+        }
+        let fallback = RoomScrubPlacement(screen: screen, measuredTrack: nil, fraction: 1, controlsVisible: false)
+        XCTAssertEqual(fallback.destination.x, 1840)
+    }
+
+    func testFineMovementAndReversalImmediatelyReuseTheCoveringStoryboardCell() async throws {
+        let (player, file) = try await localPlayer(makeItem: { SeekCountingItem(url: $0) })
+        defer { player.pause(); try? FileManager.default.removeItem(at: file) }
+        player.pause()
+        let item = try XCTUnwrap(player.currentItem as? SeekCountingItem)
+        let before = item.seekCount
+        let origin = player.currentTime().seconds
+        let bitmap = try testImage()
+        var requests: [Double] = []
+        let scanner = RoomVideoScanner(canPreview: { _ in true }, image: { _, time in
+            requests.append(time)
+            if time > 10 { try? await Task.sleep(for: .milliseconds(250)) }
+            return bitmap
+        }, frameRange: { _, time in
+            let start = floor(time / 5) * 5
+            return start..<(start + 5)
+        })
+        var frame: RoomVideoScanner.Preview?
+        XCTAssertTrue(scanner.begin(on: player) { frame = $0 })
+        scanner.move(by: 2)
+        try await wait { frame?.loading == false }
+        for _ in 0..<5 { scanner.move(by: 0.1) }
+        XCTAssertEqual(try XCTUnwrap(frame).time, origin + 2.5, accuracy: 0.001)
+        XCTAssertEqual(requests.count, 1)
+        scanner.move(by: 12)
+        try await wait { requests.count == 2 }
+        scanner.move(by: -12.25)
+        XCTAssertEqual(try XCTUnwrap(frame).time, origin + 2.25, accuracy: 0.001)
+        XCTAssertEqual(frame?.loading, false)
+        XCTAssertEqual(item.seekCount, before)
+        scanner.finish()
+        try await wait { abs(player.currentTime().seconds - origin - 2.25) < 0.05 }
+        XCTAssertEqual(item.seekCount - before, 1)
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertNil(frame)
     }
 
     private func testImage() throws -> CGImage {
