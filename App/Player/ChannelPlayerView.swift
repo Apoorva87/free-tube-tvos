@@ -236,8 +236,18 @@ private struct NativePlayer: UIViewControllerRepresentable {
 final class ChannelPlayback {
     enum Phase: Equatable { case loading, playing, finished, failed(String) }
     var phase = Phase.loading
+    private(set) var rateLimited = false
     static let softFadeKey = "room.playback.soft-fade"
+    static let overlapKey = "room.playback.overlap-seconds"
+    static let defaultOverlap = 0.55
+    static let overlapOptions = [0.25, defaultOverlap, 1, 2, 4, 6]
+    private(set) var overlapSeconds = defaultOverlap
+    @ObservationIgnored private var audioFadeFraction = 0.0
     private var softFadeEnabled = true
+
+    func configureOverlap(seconds: Double) {
+        overlapSeconds = Self.overlapOptions.contains(seconds) ? seconds : Self.defaultOverlap
+    }
     private(set) var incomingPlayer: AVQueuePlayer?
     private(set) var player: AVQueuePlayer = {
         let player = AVQueuePlayer()
@@ -253,6 +263,12 @@ final class ChannelPlayback {
     private var preparing: Task<Void, Never>?
     var hasPreparedNext: Bool { preparedItem != nil }
     private let resolver = PublicVideoPlayer()
+    private let itemResolver: (@MainActor (ChannelVideo) async throws -> AVPlayerItem)?
+
+    init(itemResolver: (@MainActor (ChannelVideo) async throws -> AVPlayerItem)? = nil) {
+        self.itemResolver = itemResolver
+    }
+
     private var activeID = UUID()
     private var statusObservation: NSKeyValueObservation?
     private var transportObservation: NSKeyValueObservation?
@@ -316,6 +332,7 @@ final class ChannelPlayback {
     }
 
     private func resolveItem(_ video: ChannelVideo) async throws -> AVPlayerItem {
+        if let itemResolver { return try await itemResolver(video) }
         let stream = try await resolver.stream(videoID: video.id, channelID: video.channelID)
         try Task.checkCancellation()
         let item = try await Self.item(for: stream)
@@ -394,11 +411,13 @@ final class ChannelPlayback {
             }
         } catch {
             guard !Task.isCancelled, id == activeID else { return }
+            rateLimited = (error as? PublicPlayerError) == .badResponse(429)
             phase = .failed(error.localizedDescription)
         }
     }
 
     func stop() {
+        rateLimited = false
         activeID = UUID()
         clearObservers()
         discardPrepared()
@@ -459,9 +478,10 @@ final class ChannelPlayback {
             let ready = preparedItem.status == .readyToPlay
             // Leave enough of even a very short clip to play after the picture changes.
             let incomingLength = preparedItem.duration.seconds / Double(player.rate)
-            let overlap = incomingLength.isFinite && incomingLength > 0 ? min(0.55, incomingLength / 2) : 0.55
+            let overlap = incomingLength.isFinite && incomingLength > 0 ? min(overlapSeconds, incomingLength / 2) : overlapSeconds
             let fraction = min(1, max(0, 1 - remaining / (ready ? overlap : 0.35)))
-            setFade(fraction)
+            let pictureWindow = ready ? min(Self.defaultOverlap, overlap) : 0.35
+            setFade(fraction, picture: min(1, max(0, 1 - remaining / pictureWindow)))
             if ready && fraction > 0 {
                 incoming.isMuted = player.isMuted
                 incoming.volume = (originalVolume ?? player.volume) * Float(fraction)
@@ -477,10 +497,12 @@ final class ChannelPlayback {
         }
     }
 
-    private func setFade(_ fraction: Double) {
-        guard fraction != fadeFraction else { return }
+    private func setFade(_ fraction: Double, picture: Double? = nil) {
+        let shade = picture ?? fraction
+        guard fraction != audioFadeFraction || shade != fadeFraction else { return }
+        audioFadeFraction = fraction
         if fraction > 0, originalVolume == nil { originalVolume = player.volume }
-        fadeFraction = fraction
+        fadeFraction = shade
         if let originalVolume { player.volume = originalVolume * Float(1 - fraction) }
         if fraction == 0 { originalVolume = nil }
     }

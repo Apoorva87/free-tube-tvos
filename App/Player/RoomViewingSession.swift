@@ -7,13 +7,18 @@ final class RoomViewingSession {
 
     private(set) var presentation = Presentation.closed
     private(set) var speed: Float = 1
-    let playback = ChannelPlayback()
+    let playback: ChannelPlayback
+    let djStation: RoomDJStation
+    private var waitingForDJTrack = false
+    private var startingDJTrack = false
+    private var selectedDJTrackID: String?
+    private var loadID = UUID()
     @ObservationIgnored var onVideoStarted: ((ChannelVideo) -> Void)?
     private var queue: [ChannelVideo] = []
     private var index = 0
     private var quickCount = 0
     private var playsRelated = false
-    private var attemptedIDs = Set<String>()
+    private(set) var attemptedIDs = Set<String>()
     @ObservationIgnored private var relatedTask: Task<Void, Never>?
     @ObservationIgnored private let recommendations: (ChannelVideo) async throws -> [ChannelVideo]
 
@@ -21,12 +26,47 @@ final class RoomViewingSession {
     @ObservationIgnored private var noticeTimer: Task<Void, Never>?
     @ObservationIgnored private var loading: Task<Void, Never>?
 
-    init(recommendations: @escaping (ChannelVideo) async throws -> [ChannelVideo] = ChannelCatalog().similarVideos) {
+    init(playback: ChannelPlayback = ChannelPlayback(), djStation: RoomDJStation = RoomDJStation(),
+         recommendations: @escaping (ChannelVideo) async throws -> [ChannelVideo] = ChannelCatalog().similarVideos) {
+        self.playback = playback
+        self.djStation = djStation
         self.recommendations = recommendations
+        djStation.session = self
     }
 
     var video: ChannelVideo? { queue.indices.contains(index) ? queue[index] : nil }
     var next: ChannelVideo? { queue.indices.contains(index + 1) ? queue[index + 1] : nil }
+
+    var upcoming: [ChannelVideo] { Array(queue.dropFirst(index + 1)) }
+
+    func startDJ(_ video: ChannelVideo, resetHistory: Bool) {
+        selectedDJTrackID = video.id
+        playsRelated = false
+        quickCount = 0
+        if resetHistory { attemptedIDs = [] }
+        queue = [video]
+        index = 0
+        presentation = .mini
+        load()
+    }
+
+    func replaceDJUpcoming(_ videos: [ChannelVideo]) {
+        guard djStation.isActive, let current = video else { return }
+        queue = [current] + videos
+        index = 0
+        quickCount = 0
+        resumeDJQueue()
+    }
+
+    func suspendDJQueue() {
+        if !startingDJTrack { playback.prepareNext(nil) }
+    }
+
+    func resumeDJQueue() {
+        guard djStation.isActive, !djStation.isSearching else { return }
+        if waitingForDJTrack, next != nil { advance() }
+        else if !startingDJTrack { playback.prepareNext(next) }
+    }
 
     func open(_ video: ChannelVideo, in queue: [ChannelVideo]) {
         guard queue.contains(where: { $0.id == video.id }) else { return }
@@ -39,7 +79,9 @@ final class RoomViewingSession {
 
     private func start(_ video: ChannelVideo, in queue: [ChannelVideo], related: Bool) {
         guard let position = queue.firstIndex(where: { $0.id == video.id && $0.channelID == video.channelID }) else { return }
-        if presentation == .mini, self.video?.id == video.id, self.video?.channelID == video.channelID,
+        let wasDJ = djStation.isActive
+        djStation.end()
+        if !wasDJ, presentation == .mini, self.video?.id == video.id, self.video?.channelID == video.channelID,
            related == playsRelated, related || queue == self.queue {
             expand()
             return
@@ -110,6 +152,7 @@ final class RoomViewingSession {
 
     func advance() {
         guard next != nil else { return }
+        selectedDJTrackID = nil
         if quickCount > 0 { quickCount -= 1 }
         index += 1
         load(usePrepared: true)
@@ -131,21 +174,52 @@ final class RoomViewingSession {
         }
     }
 
-    func load(usePrepared: Bool = false) {
+    func load(usePrepared: Bool = false, retrySelectedDJTrack: Bool = true) {
         guard let video else { return }
+        loadID = UUID()
+        let generation = loadID
+        startingDJTrack = djStation.isActive
+        waitingForDJTrack = false
         loading?.cancel()
         relatedTask?.cancel()
         relatedTask = nil
         attemptedIDs.insert(video.id)
         if !usePrepared { playback.stop() }
+        if djStation.isActive { djStation.currentChanged(to: video) }
         loading = Task { @MainActor [onVideoStarted] in
             guard !Task.isCancelled else { return }
             await playback.play(video, usePrepared: usePrepared) {
+                guard loadID == generation, !Task.isCancelled else { return }
+                startingDJTrack = false
+                selectedDJTrackID = nil
                 onVideoStarted?(video)
                 if playsRelated { prepareRelated(for: video) }
-                else { playback.prepareNext(next) }
+                else if !djStation.isActive || !djStation.isSearching { playback.prepareNext(next) }
             }
-            guard !Task.isCancelled else { return }
+            guard generation == loadID, !Task.isCancelled else { return }
+            startingDJTrack = false
+            if djStation.isActive {
+                if playback.rateLimited { return }
+                // A directly selected recording stays selected if its stream cannot start.
+                if case .failed = playback.phase, selectedDJTrackID == video.id {
+                    if retrySelectedDJTrack {
+                        try? await Task.sleep(for: .seconds(1))
+                        guard generation == loadID, !Task.isCancelled else { return }
+                        load(retrySelectedDJTrack: false)
+                    }
+                    return
+                }
+                switch playback.phase {
+                case .finished, .failed:
+                    if next != nil, !djStation.isSearching { advance() }
+                    else {
+                        waitingForDJTrack = true
+                        djStation.fillIfLow()
+                    }
+                default: break
+                }
+                return
+            }
             if case .failed = playback.phase, next != nil, playsRelated || (presentation == .mini && quickCount > 0) {
                 advance()
                 return
@@ -166,6 +240,10 @@ final class RoomViewingSession {
     }
 
     func close() {
+        selectedDJTrackID = nil
+        loadID = UUID()
+        waitingForDJTrack = false
+        djStation.end()
         loading?.cancel()
         loading = nil
         relatedTask?.cancel()

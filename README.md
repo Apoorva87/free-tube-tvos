@@ -18,9 +18,19 @@ The native tvOS player supports speeds from 0.5× to 2×. Search, viewing histor
 
 Hold Select on a video tile and choose **Add to Quick Playlist**. The same menu includes **Visit Creator** when the channel is available. Queued picks play next in the order you add them. Standalone videos then autoplay from each video’s related recommendations. Starting a saved playlist follows its saved order. The Quick Playlist is also saved under **Playlists** for later.
 
-**Settings → Playback → Soft Fade** is on by default. When the next stream is ready, its audio fades in during the last half-second of the outgoing video. The incoming player takes over the picture at its current position. Turn Soft Fade off for the previous transition, which preloads the next item, fades the outgoing picture and audio over 0.35 seconds and starts the next item at the handoff.
+**Settings → Playback → Soft Fade** is on by default. Use **Audio overlap** to choose 0.25, 0.55 (default), 1, 2, 4, or 6 seconds. At 2 seconds, for example, the next song starts quietly when the current one has two seconds left. At the handoff, the picture switches to the point you’re already hearing in the next song. Turn Soft Fade off for the previous transition, which preloads the next item, fades the outgoing picture and audio over 0.35 seconds and starts the next item at the handoff.
 
 Search remembers the last six searches for each profile on this TV. Select a recent term to search again, use **Clear search** to reset the field and results, or choose **Clear history** to erase recent terms.
+
+## DJ Mode
+
+Open **DJ Mode** in the sidebar. Choose a recommended song from your listening history or music interests, or use the search field to start with a genre, mood, or song. Try **songs like Gulabi Sadi**. If several recordings match, pick the one you mean. In regular Search you can also hold Select on the recording and choose **Play in DJ** to start with that exact video.
+
+The current song plays in the corner while you browse **Up next**. Enter **more Marathi wedding songs** to change what plays next. Choose **Play Now** on a tile when you want an immediate switch. The station fetches more tracks as the queue runs low. Likes influence the upcoming order, and disliked tracks are excluded from future recommendations for that profile.
+
+**Flow** uses available mood and published tempo metadata. **Popular Shuffle** draws from highly viewed matches. A word-based station starts with English and Hindi by default. A station based on a specific recording uses the language the catalog can identify. Use the globe control to choose a language yourself.
+
+If YouTube limits playback requests, DJ holds the current song and queue. Use **Retry** later or **Skip** to select the next song.
 
 ## Run in Xcode
 
@@ -45,7 +55,7 @@ The TV stores manually entered client settings and the Google refresh token in i
 | What you want to do | How |
 | --- | --- |
 | Browse Discover | Choose a category, press **Down** to enter its rows, then **Left** or **Right** to browse thumbnails. Press **Select** to play a recommendation without following its channel. |
-| Move down the sidebar | From the profile icon, press **Down** for Discover, then Home, Subscriptions, Playlists, History, Search, Ask AI, and Settings. |
+| Move down the sidebar | From the profile icon, press **Down** for Discover, then Home, Subscriptions, Playlists, History, DJ Mode, Search, Ask AI, and Settings. |
 | Return to your channels | Press **Back** while browsing and select **Subscriptions**. Focus a channel to filter its uploads. Press **Right** to return to the videos. |
 | Adjust playback speed | Press **Up** during playback and choose the speedometer. Available rates are 0.5×, 1×, 1.25×, 1.5× and 2×. |
 | Visit the creator | Choose **View creator** in the player controls. Play another upload, follow the channel on this TV, or select **Subscribe on YouTube** and scan the code to subscribe on your phone. When you close the code, freeTube refreshes the subscriptions for its signed-in profile. |

@@ -258,3 +258,149 @@ extension RoomCategoryTests {
         XCTAssertEqual(signed.map(\.id), ["popular0001"])
     }
 }
+
+extension RoomCategoryTests {
+    private func djTrack(_ id: String, _ title: String, _ artist: String, views: String? = nil) -> ChannelVideo {
+        ChannelVideo(id: id, title: title, channelID: artist, channelTitle: artist, thumbnail: nil,
+                     durationSeconds: 220, viewLabel: views)
+    }
+
+    func testDJResolvesArtistUploadAcrossHashtagAndOriginalScript() async throws {
+        let original = djTrack("B_6d3RBiEN0", "#GulabiSadi ( गुलाबी साडी ) | Official #video | Sanju Rathod | G-Spark | #marathi Song", "Sanju Rathod SR")
+        let copy = djTrack("03fYR-z2m_w", "Gulabi Sadi official song #gulabisadi", "AMAN LO-FI MUSIC")
+        let remake = djTrack("zAEA3h529ZU", "Dhamaal 4: SAREE MV | Sanju Rathod, Tanishk", "T-Series")
+        let catalog = RoomDJCatalog(search: { _ in [copy, remake, original] }, mix: { _ in [] }, metadata: { _ in nil })
+        let prompt = "Play songs like Gulabi Sadi"
+        let results = try await catalog.search(prompt)
+        XCTAssertEqual(results.first?.id, original.id)
+        XCTAssertEqual(RoomDJCatalog.resolvedSeed(for: prompt, from: results)?.id, original.id)
+        XCTAssertNil(RoomDJCatalog.topic(for: prompt))
+        XCTAssertEqual(RoomDJCatalog.language(in: original.title), "Marathi")
+        let alternatives = [djTrack("aaaaaaa0000", "Hello (Official Video)", "AdeleVEVO"),
+                            djTrack("bbbbbbb0000", "Hello (Official Video)", "Lionel Richie - Topic")]
+        XCTAssertNil(RoomDJCatalog.resolvedSeed(for: "Hello", from: alternatives))
+    }
+
+    func testDJExplicitLanguageOverridesMixAndSearchLanguageLeaks() async throws {
+        let seed = djTrack("B_6d3RBiEN0", "Gulabi Sadi | Marathi Song", "Sanju Rathod")
+        let marathi = djTrack("sUf2PtEZris", "Shaky | Marathi Song", "Sanju Rathod")
+        let hindi = djTrack("VAdGW7QDJiU", "Chaleya (Hindi) | Official Song", "T-Series")
+        let unknown = djTrack("f6vY6tYvKGA", "Mystery (Official Video)", "Artist")
+        let catalog = RoomDJCatalog(search: { _ in [seed, marathi, hindi, unknown] },
+                                    mix: { _ in [marathi, hindi, unknown] }, metadata: { _ in nil })
+        let station = try await catalog.station(seed: seed, language: "Hindi", mode: .flow,
+                                                excluding: [], liked: [], disliked: [])
+        XCTAssertEqual(station.map(\.id), [hindi.id])
+        let automatic = try await catalog.station(seed: seed, language: nil, mode: .flow,
+                                                  excluding: [], liked: [], disliked: [])
+        XCTAssertEqual(automatic.map(\.id), [marathi.id])
+        XCTAssertEqual(RoomDJCatalog.language(in: "more Marathi wedding songs"), "Marathi")
+        XCTAssertTrue(RoomDJCatalog.topic(for: "more Marathi wedding songs")?.contains("wedding") == true)
+    }
+
+    func testDJFlowUsesPublishedMoodTempoAndPopularShuffleUsesViews() {
+        let seed = djTrack("seed0000001", "Night Rain | English chill 85 BPM", "Artist One")
+        let fast = djTrack("fast0000001", "All Night | English dance 150 BPM", "Artist Two", views: "900M views")
+        let calm = djTrack("calm0000001", "Home | English chill 83 BPM", "Artist Three", views: "200 views")
+        let disliked = djTrack("gone0000001", "Gone | English chill", "Artist Four", views: "1B views")
+        let catalog = RoomDJCatalog()
+        let options = [fast, calm, calm, disliked, seed]
+        let flow = catalog.rank(options, seed: seed, language: "English", mode: .flow,
+                                excluding: [], liked: [], disliked: [disliked])
+        XCTAssertEqual(flow.map(\.id), [calm.id, fast.id])
+        let pop = catalog.rank(options, seed: seed, language: "English", mode: .popularShuffle,
+                               excluding: [], liked: [], disliked: [disliked])
+        XCTAssertEqual(pop.first?.id, fast.id)
+    }
+}
+
+extension RoomCategoryTests {
+    func testDJFeedbackMovesSimilarUnvotedSongsInOppositeDirections() {
+        let catalog = RoomDJCatalog()
+        let seed = djTrack("seed0000001", "Seed | English Song", "Seed Artist")
+        let neutral = djTrack("neut0000001", "Track One | English Song", "First Artist")
+        let related = djTrack("rela0000001", "Track Two | English acoustic", "Second Artist")
+        let vote = djTrack("vote0000001", "Another Track | English acoustic", "Third Artist")
+        func order(_ options: [ChannelVideo], liked: [ChannelVideo] = [], disliked: [ChannelVideo] = []) -> [String] {
+            catalog.rank(options, seed: seed, language: nil, mode: .flow, excluding: [],
+                         liked: liked, disliked: disliked).map(\.id)
+        }
+        XCTAssertEqual(order([neutral, related]).first, neutral.id)
+        XCTAssertEqual(order([neutral, related], liked: [vote]).first, related.id)
+        XCTAssertEqual(order([related, neutral]).first, related.id)
+        XCTAssertEqual(order([related, neutral], disliked: [vote]).first, neutral.id)
+    }
+
+    func testDJBroadMoodStartsAndReranksWithinEnglishAndHindi() async throws {
+        let english = djTrack("engl0000001", "English Song | Happy", "Singer One")
+        let hindi = djTrack("hind0000001", "Hindi Song | Happy", "Singer Two")
+        let tamil = djTrack("tami0000001", "Tamil Song | Happy", "Singer Three")
+        let catalog = RoomDJCatalog(search: { _ in [tamil, english, hindi] }, mix: { _ in [tamil] }, metadata: { _ in nil })
+        XCTAssertEqual(RoomDJCatalog.topic(for: "happy"), "happy")
+        XCTAssertEqual(RoomDJCatalog.topic(for: "deep house"), "deep house")
+        XCTAssertFalse(RoomDJCatalog.songSized(djTrack("quiz0000001", "Finish the Lyrics | Bollywood Quiz", "Quiz Host")))
+        let choices = try await catalog.search("happy")
+        XCTAssertEqual(Set(choices.map(\.id)), Set([english.id, hindi.id]))
+        let station = try await catalog.station(seed: english, language: nil, mode: .flow, excluding: [],
+                                                liked: [], disliked: [], topic: "happy")
+        XCTAssertEqual(station.map(\.id), [hindi.id])
+        let reranked = catalog.rank([hindi, tamil], seed: english, language: nil, mode: .flow,
+                                    excluding: [], liked: [], disliked: [], topic: "happy")
+        XCTAssertEqual(reranked.map(\.id), [hindi.id])
+    }
+}
+
+extension RoomCategoryTests {
+    func testDJUsesExplicitSongMetadataAndSpacesPerformersAcrossLabels() throws {
+        let player: [String: Any] = [
+            "videoDetails": ["videoId": "song0000001", "title": "A Day", "author": "Label",
+                             "keywords": ["marathi dj songs", "marathi folk song", "dance"], "viewCount": "34000",
+                             "shortDescription": "Singer: Artist One\nProducer: Artist Two"],
+            "microformat": ["playerMicroformatRenderer": ["category": "Music"]]
+        ]
+        let data = try XCTUnwrap(RoomDJCatalog.metadata(from: player, id: "song0000001"))
+        XCTAssertEqual(data.language, "Marathi")
+        XCTAssertEqual(data.artist, "artist one")
+        XCTAssertEqual(data.views, 34000)
+        XCTAssertTrue(data.descriptors.contains("dance"))
+        XCTAssertNil(data.bpm)
+        XCTAssertNil(RoomDJCatalog.metadata(from: player, id: "wrong000001"))
+
+        let seed = djTrack("seed0000001", "English chill | Singer: Artist One", "Label One")
+        let sameArtist = djTrack("same0000001", "Another English chill song | Singer: Artist One", "Label Two")
+        let anotherArtist = djTrack("next0000001", "Other English Song | Singer: Artist Two", "Label One")
+        let catalog = RoomDJCatalog()
+        let tracks = catalog.rank([sameArtist, anotherArtist], seed: seed, language: nil, mode: .flow,
+                                  excluding: [], liked: [], disliked: [])
+        XCTAssertEqual(tracks.map(\.id), [anotherArtist.id, sameArtist.id])
+    }
+}
+
+extension RoomCategoryTests {
+    func testDJThinCrossLanguageOverridePivotsIntoMatchingSongsRadio() async throws {
+        let seed = djTrack("seed0000001", "Seed | Marathi song", "Seed Artist")
+        let pivot = djTrack("pivt0000001", "A Hindi Song", "Singer One")
+        let next = djTrack("more0000001", "Another Hindi Song", "Singer Two")
+        let catalog = RoomDJCatalog(search: { _ in [pivot] },
+                                    mix: { id in id == pivot.id ? [next, seed] : [] }, metadata: { _ in nil })
+        let songs = try await catalog.station(seed: seed, language: "Hindi", mode: .flow,
+                                              excluding: [], liked: [], disliked: [])
+        XCTAssertEqual(Set(songs.map(\.id)), Set([pivot.id, next.id]))
+    }
+}
+
+extension RoomCategoryTests {
+    func testDJSkipsIdenticalCreditedReuploadsAcrossRefillsAndIgnoresSubtitleLanguage() {
+        let seed = djTrack("seed0000001", "Seed | Marathi song", "Seed Artist")
+        let title = "Wajle Ki Bara | Natarang | Amruta Khanvilkar | Ajay Atul | Marathi Song"
+        let first = djTrack("song0000001", title, "First Label")
+        let repost = djTrack("copy0000001", title + " | Bela Shende", "Second Label")
+        let catalog = RoomDJCatalog()
+        let options = catalog.rank([first, repost], seed: seed, language: nil, mode: .flow,
+                                   excluding: [], liked: [], disliked: [])
+        XCTAssertEqual(options.count, 1)
+        let refill = catalog.rank([repost], seed: seed, language: nil, mode: .flow, excluding: [first.id], liked: [], disliked: [])
+        XCTAssertTrue(refill.isEmpty)
+        XCTAssertNil(RoomDJCatalog.inferredLanguage(for: djTrack("lang0000001", "Cupid (English Lyrics)", "Singer")))
+    }
+}

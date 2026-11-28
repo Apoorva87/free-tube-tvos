@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct freeTubeApp: App {
+    @AppStorage(ChannelPlayback.overlapKey) private var overlap = ChannelPlayback.defaultOverlap
     @AppStorage(ChannelPlayback.softFadeKey) private var softFade = true
     @State private var account = ChannelAccount()
     @State private var viewing = RoomViewingSession()
@@ -16,6 +17,9 @@ struct freeTubeApp: App {
                 .environment(account)
                 .environment(playlists)
                 .environment(helper)
+                .onChange(of: overlap, initial: true) { _, seconds in
+                    viewing.playback.configureOverlap(seconds: seconds)
+                }
                 .onChange(of: softFade, initial: true) { _, enabled in
                     viewing.playback.configureSoftFade(enabled, next: viewing.next)
                 }

@@ -77,6 +77,21 @@ final class freeTubeNavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["20 minutes or more"].exists)
     }
 
+    func testAudioOverlapDurationCanBeChangedInSettings() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        XCUIRemote.shared.press(.menu)
+        selectWithRemote(app.buttons["nav-settings"], in: app)
+        let picker = app.descendants(matching: .any)["settings.overlap"].firstMatch
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        let choice = element(labeled: "2 s", in: app)
+        XCTAssertTrue(choice.waitForExistence(timeout: 5))
+        selectWithRemote(choice, in: app)
+        XCTAssertTrue(app.staticTexts["The next song starts quietly with 2 seconds left in the current one."].waitForExistence(timeout: 5))
+        selectWithRemote(element(labeled: "0.55 s", in: app), in: app)
+    }
+
     func testSoftFadeSettingPersistsAcrossLaunches() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -196,6 +211,81 @@ final class freeTubeNavigationTests: XCTestCase {
         let player = app.descendants(matching: .any).matching(NSPredicate(format: "identifier IN %@", ["native-playback", "playing-title"]))
         XCTAssertTrue(player.firstMatch.waitForExistence(timeout: 10))
         XCTAssertFalse(app.alerts.firstMatch.exists)
+    }
+
+    func testDJStartsGulabiSadiAndSteersWhileItPlays() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let remote = XCUIRemote.shared
+        app.launch()
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-dj"], in: app)
+        let field = app.textFields["dj-query"]
+        XCTAssertTrue(field.waitForExistence(timeout: 8))
+        selectWithRemote(field, in: app)
+        app.typeText("songs like Gulabi Sadi\n")
+
+        let seedID = "B_6d3RBiEN0"
+        let now = app.staticTexts["dj-now-" + seedID]
+        let choice = app.buttons["discovery-dj-choices-" + seedID]
+        let resolved = app.descendants(matching: .any).matching(NSPredicate(format: "identifier IN %@",
+            ["dj-now-" + seedID, "discovery-dj-choices-" + seedID])).firstMatch
+        XCTAssertTrue(resolved.waitForExistence(timeout: 45))
+        remote.press(.menu) // Dismiss the system text editor.
+        if !now.exists { selectWithRemote(choice, in: app) }
+        XCTAssertTrue(now.waitForExistence(timeout: 12))
+        let upcoming = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'discovery-dj-upcoming-'"))
+        XCTAssertTrue(upcoming.firstMatch.waitForExistence(timeout: 60))
+        XCTAssertTrue(app.staticTexts["Now playing"].waitForExistence(timeout: 40))
+        XCTAssertTrue(app.buttons["dj-language"].label.contains("Marathi"))
+        XCTAssertTrue(app.buttons["mini-expand"].exists)
+        capture("DJ Mode - Gulabi Sadi and Marathi up next")
+
+        selectWithRemote(field, in: app)
+        app.typeText("more Marathi wedding songs\n")
+        let direction = app.staticTexts["dj-direction"]
+        let steered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label ==[c] %@", "more Marathi wedding songs"),
+                                                object: direction)
+        XCTAssertEqual(XCTWaiter.wait(for: [steered], timeout: 55), .completed)
+        remote.press(.menu)
+        XCTAssertTrue(now.exists, "Steering should leave the current song playing.")
+        XCTAssertTrue(upcoming.firstMatch.waitForExistence(timeout: 45))
+        capture("DJ Mode - steering toward Marathi wedding songs")
+    }
+
+    func testSearchPlayInDJUsesTheExactSongImmediately() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let remote = XCUIRemote.shared
+        app.launch()
+        remote.press(.menu)
+        selectWithRemote(app.buttons["nav-search"], in: app)
+        selectWithRemote(app.textFields.firstMatch, in: app)
+        // Use the video's exact ID so changing text-search rankings don't choose the recording for this test.
+        let seedID = "B_6d3RBiEN0"
+        app.typeText(seedID + "\n")
+        let tile = app.buttons["video-" + seedID]
+        XCTAssertTrue(tile.waitForExistence(timeout: 45))
+        remote.press(.menu)
+        XCTAssertTrue(focusWithRemote(tile, in: app))
+        remote.press(.select, forDuration: 1.2)
+        let action = app.cells.containing(NSPredicate(format: "label == %@", "Play in DJ")).firstMatch
+        XCTAssertTrue(action.waitForExistence(timeout: 6))
+        for _ in 0..<6 where !action.hasFocus { remote.press(.down) }
+        XCTAssertTrue(action.hasFocus)
+        remote.press(.select)
+        XCTAssertTrue(app.staticTexts["dj-now-" + seedID].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.textFields["dj-query"].exists)
+        XCTAssertTrue(app.buttons["mini-expand"].exists)
+        let transport = app.staticTexts["dj-playing-state"]
+        let startedOrDeclined = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label IN %@", ["Now playing", "Playback unavailable"]), object: transport)
+        XCTAssertEqual(XCTWaiter.wait(for: [startedOrDeclined], timeout: 50), .completed)
+        if transport.label == "Playback unavailable" {
+            XCTAssertTrue(app.staticTexts["dj-playback-error"].exists)
+            XCTAssertTrue(app.buttons["dj-retry"].exists)
+        }
+        XCTAssertTrue(app.staticTexts["dj-now-" + seedID].exists)
     }
 
     func testMiniPlayerSearchHoldQueuesAndVisitsCreator() throws {

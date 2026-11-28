@@ -2,6 +2,7 @@ import SwiftUI
 
 extension EnvironmentValues {
     @Entry var visitSearchCreator: ((RoomChannel) -> Void)? = nil
+    @Entry var playSearchResultInDJ: ((ChannelVideo) -> Void)? = nil
 }
 
 @MainActor @Observable
@@ -48,6 +49,7 @@ struct RoomSearchView: View {
     let history: RoomSearchHistory
     let open: (RoomChannel) -> Void
     let play: (ChannelVideo, [ChannelVideo]) -> Void
+    let playInDJ: (ChannelVideo) -> Void
     @State private var query = ""
     @State private var showAsk = false
     @State private var submitted = ""
@@ -103,6 +105,7 @@ struct RoomSearchView: View {
                     Text("Videos").font(.title2.bold())
                     RoomVideoGrid(videos: videos) { video in play(video, videos) }
                         .environment(\.visitSearchCreator, open)
+                        .environment(\.playSearchResultInDJ, playInDJ)
                 }
                 if attempted && channels.isEmpty && videos.isEmpty && error == nil && !isLoading {
                     Text("No results for “\(submitted)”.")

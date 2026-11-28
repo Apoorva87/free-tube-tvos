@@ -317,6 +317,7 @@ private struct VideoPlaylistMenu: ViewModifier {
     @Environment(RoomPlaylistStore.self) private var playlists
     @Environment(ChannelAccount.self) private var account
     @Environment(\.visitSearchCreator) private var visitSearchCreator
+    @Environment(\.playSearchResultInDJ) private var playInDJ
     @State private var adding = false
     @State private var creator: RoomChannel?
 
@@ -341,6 +342,9 @@ private struct VideoPlaylistMenu: ViewModifier {
                             library.requestRefresh()
                         } label: { Label("Follow channel on this TV", systemImage: "person.badge.plus") }
                     }
+                }
+                if let playInDJ {
+                    Button { playInDJ(video) } label: { Label("Play in DJ", systemImage: "music.note.list") }
                 }
             }
             .sheet(isPresented: $adding) {

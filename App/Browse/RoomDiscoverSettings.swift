@@ -76,6 +76,7 @@ final class RoomDiscoverPreferences {
 struct RoomDiscoverSettings: View {
     let preferences: RoomDiscoverPreferences
     let focus: FocusState<RoomBrowseFocus?>.Binding
+    @AppStorage(ChannelPlayback.overlapKey) private var overlap = ChannelPlayback.defaultOverlap
     @AppStorage(ChannelPlayback.softFadeKey) private var softFade = true
     @State private var addingTopic = false
     @State private var topic = ""
@@ -87,7 +88,17 @@ struct RoomDiscoverSettings: View {
                 Toggle("Soft Fade", isOn: $softFade)
                     .focused(focus, equals: .settingsFirst)
                     .accessibilityIdentifier("settings.softFade")
-                Text("Overlap the next video’s audio briefly during the fade.")
+                if softFade {
+                    Picker("Audio overlap", selection: $overlap) {
+                        ForEach(ChannelPlayback.overlapOptions, id: \.self) { seconds in
+                            Text("\(seconds.formatted()) s").tag(seconds)
+                        }
+                    }
+                    .accessibilityIdentifier("settings.overlap")
+                }
+                Text(softFade
+                     ? "The next song starts quietly with \(overlap.formatted()) \(overlap == 1 ? "second" : "seconds") left in the current one."
+                     : "The next song starts when the current one ends.")
                     .font(.system(size: 24)).foregroundStyle(RoomPalette.muted)
                     .padding(.bottom, 10)
                 RoomShelfTitle(title: "Discover rows")

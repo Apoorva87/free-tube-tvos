@@ -2,9 +2,15 @@ import AVFoundation
 import SwiftUI
 
 enum RoomSection: String, CaseIterable {
-    case discover = "Discover", home = "Home", channels = "Channels", search = "Search", playlists = "Playlists", history = "History", assistant = "Ask AI", settings = "Settings"
-    static let sidebarOrder: [Self] = [.discover, .home, .channels, .playlists, .history, .search, .assistant, .settings]
-    var title: String { self == .channels ? "Subscriptions" : rawValue }
+    case discover = "Discover", home = "Home", channels = "Channels", search = "Search", playlists = "Playlists", history = "History", dj = "DJ", assistant = "Ask AI", settings = "Settings"
+    static let sidebarOrder: [Self] = [.discover, .home, .channels, .playlists, .history, .dj, .search, .assistant, .settings]
+    var title: String {
+        switch self {
+        case .channels: "Subscriptions"
+        case .dj: "DJ Mode"
+        default: rawValue
+        }
+    }
     var navigationID: String { self == .assistant ? "assistant" : rawValue.lowercased() }
     var icon: String {
         switch self {
@@ -16,12 +22,13 @@ enum RoomSection: String, CaseIterable {
         case .settings: "gearshape"
         case .playlists: "list.and.film"
         case .history: "clock.arrow.circlepath"
+        case .dj: "music.note.list"
         }
     }
 }
 
 enum RoomBrowseFocus: Hashable {
-    case settingsFirst, menu, featured, newPlaylist, assistantPrompt, historyBrowse, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
+    case settingsFirst, menu, featured, newPlaylist, assistantPrompt, djSearch, historyBrowse, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
     case discoverCategory(RoomDiscoverCategory), discoverRefresh, discoverFind, discoverSignIn
     case shelfVideo(shelf: String, video: String)
 
@@ -168,8 +175,15 @@ private struct RoomShell: View {
                             RoomPlaylistsView(focus: $focus, play: viewing.openPlaylist)
                         case .history:
                             RoomWatchHistoryView(store: history, focus: $focus, play: onPlay, browse: { choose(.home) })
+                        case .dj:
+                            RoomDJView(history: history.videos, preferences: preferences, music: categoryCatalog.music,
+                                       interestFeed: interestFeed, focus: $focus, openMenu: { menuOpen = true })
                         case .search:
-                            RoomSearchView(account: account, library: library, history: recentSearches, open: { channel = $0 }, play: onPlay)
+                            RoomSearchView(account: account, library: library, history: recentSearches, open: { channel = $0 },
+                                           play: onPlay, playInDJ: { video in
+                                viewing.djStation.playNow(video)
+                                choose(.dj)
+                            })
                         }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
@@ -218,6 +232,7 @@ private struct RoomShell: View {
         .onChange(of: RoomWatchHistoryStore.Scope(signedIn: account.isSignedIn, profileID: library.profile?.id), initial: true) { _, scope in
             history.select(scope)
             recentSearches.select(scope)
+            viewing.djStation.select(scope, sessionID: account.sessionID)
             viewing.onVideoStarted = { [weak history, weak account, id = account.sessionID] video in
                 guard account?.sessionID == id else { return }
                 history?.record(video)
@@ -302,6 +317,7 @@ private struct RoomShell: View {
         case .channels: .subscriptionFilter(nil)
         case .playlists: .newPlaylist
         case .history: history.firstFocus
+        case .dj: .djSearch
         case .assistant: .assistantPrompt
         case .settings: .settingsFirst
         case .search: .menu
@@ -382,7 +398,7 @@ private struct RoomBrowseRail: View {
         }
         .onChange(of: focus.wrappedValue) { _, target in
             switch target {
-            case .settingsFirst, .featured, .newPlaylist, .historyBrowse, .video, .channel, .subscriptionFilter,
+            case .settingsFirst, .featured, .newPlaylist, .historyBrowse, .djSearch, .video, .channel, .subscriptionFilter,
                  .discoverCategory, .discoverRefresh, .discoverFind, .discoverSignIn, .shelfVideo:
                 lastTile = target
             default: break
