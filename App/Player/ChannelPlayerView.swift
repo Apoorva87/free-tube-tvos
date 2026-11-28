@@ -165,6 +165,14 @@ private struct NativePlayer: UIViewControllerRepresentable {
             }
         }
 
+        nonisolated func skipToNextItem(for controller: AVPlayerViewController) {
+            Task { @MainActor [weak self, weak controller] in
+                guard let self, let controller, controller.player === session.playback.player,
+                      videoID == session.video?.id else { return }
+                session.advance()
+            }
+        }
+
         nonisolated func playerViewController(_ controller: AVPlayerViewController, willTransitionToVisibilityOfTransportBar visible: Bool,
                                               with coordinator: any AVPlayerViewControllerAnimationCoordinator) {
             Task { @MainActor [weak self] in self?.scanGestures.transportBarVisible = visible }

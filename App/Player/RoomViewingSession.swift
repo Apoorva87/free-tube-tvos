@@ -31,6 +31,7 @@ final class RoomViewingSession {
     @ObservationIgnored private var noticeTimer: Task<Void, Never>?
     @ObservationIgnored private var loading: Task<Void, Never>?
     @ObservationIgnored private var nextCommandTarget: Any?
+    @ObservationIgnored private weak var nowPlayingItem: AVPlayerItem?
 
     init(playback: ChannelPlayback = ChannelPlayback(), djStation: RoomDJStation = RoomDJStation(),
          recommendations: @escaping (ChannelVideo) async throws -> [ChannelVideo] = ChannelCatalog().similarVideos) {
@@ -240,7 +241,12 @@ final class RoomViewingSession {
     }
 
     func minimize() {
-        guard presentation == .full, playback.phase == .playing else { return }
+        guard playback.phase == .playing else { return }
+        browseDuringPlayback()
+    }
+
+    func browseDuringPlayback() {
+        guard presentation == .full else { return }
         presentation = .mini
     }
 
@@ -259,6 +265,7 @@ final class RoomViewingSession {
 
     // AVKit handles play, pause and time-based Siri commands. The app owns the logical queue.
     func updateSystemNextCommand() {
+        updateNowPlayingQueue()
         let available = presentation != .closed && next != nil
         if !available {
             removeSystemNextCommand()
@@ -271,6 +278,21 @@ final class RoomViewingSession {
             }
         }
         if !command.isEnabled { command.isEnabled = true }
+    }
+
+    private func updateNowPlayingQueue() {
+        guard let item = nowPlayingItem, item === playback.player.currentItem, let video else { return }
+        var info = item.nowPlayingInfo ?? [:]
+        guard info[MPNowPlayingInfoPropertyPlaybackQueueCount] as? Int != queue.count ||
+              info[MPNowPlayingInfoPropertyPlaybackQueueIndex] as? Int != index ||
+              info[MPNowPlayingInfoPropertyExternalContentIdentifier] as? String != video.id else { return }
+        info[MPNowPlayingInfoPropertyPlaybackQueueCount] = queue.count
+        info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = index
+        info[MPNowPlayingInfoPropertyExternalContentIdentifier] = video.id
+        info[MPMediaItemPropertyTitle] = video.title
+        info[MPMediaItemPropertyArtist] = video.channelTitle
+        info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.video.rawValue
+        item.nowPlayingInfo = info
     }
 
     private func removeSystemNextCommand() {
@@ -328,6 +350,7 @@ final class RoomViewingSession {
 
     private func beginPlayback(usePrepared: Bool = false, retrySelectedDJTrack: Bool = true) {
         guard let video, !djStation.isActive || djStation.requestsAllowed() else { return }
+        nowPlayingItem = nil
         loadID = UUID()
         let generation = loadID
         // A handoff can immediately adopt any work already started for the next item.
@@ -346,6 +369,8 @@ final class RoomViewingSession {
             guard !Task.isCancelled else { return }
             await playback.play(video, usePrepared: usePrepared) {
                 guard loadID == generation, !Task.isCancelled else { return }
+                nowPlayingItem = playback.player.currentItem
+                updateNowPlayingQueue()
                 selectedDJTrackID = nil
                 onVideoStarted?(video)
                 if playsRelated { prepareRelated(for: video) }
@@ -402,6 +427,7 @@ final class RoomViewingSession {
     }
 
     func close() {
+        nowPlayingItem = nil
         removeSystemNextCommand()
         selectedDJTrackID = nil
         loadID = UUID()

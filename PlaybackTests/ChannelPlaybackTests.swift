@@ -1,4 +1,5 @@
 import AVFoundation
+import AppIntents
 import MediaPlayer
 import UIKit
 import XCTest
@@ -758,6 +759,10 @@ extension ChannelPlaybackTests {
         XCTAssertEqual(session.handleSystemNext(), .noActionableNowPlayingItem)
         session.openPlaylist(songs[0], in: songs)
         try await djWait("the first item to start") { session.playback.player.timeControlStatus == .playing }
+        try await djWait("the active item to publish its real queue length") {
+            session.playback.player.currentItem?.nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackQueueCount] as? Int == 3
+        }
+        XCTAssertEqual(session.playback.player.currentItem?.nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackQueueIndex] as? Int, 0)
         XCTAssertEqual(session.handleSystemNext(), .success)
         XCTAssertEqual(session.video?.id, songs[1].id)
         try await djWait("the second item to start") { session.playback.phase == .playing }
@@ -766,9 +771,26 @@ extension ChannelPlaybackTests {
         let result = await Task.detached { session.handleSystemNext() }.value
         XCTAssertEqual(result, .success)
         XCTAssertEqual(session.video?.id, songs[2].id)
+        try await djWait("the last item to publish its position") {
+            session.playback.player.currentItem?.nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackQueueIndex] as? Int == 2
+        }
         XCTAssertEqual(session.handleSystemNext(), .noSuchContent)
         session.close()
         XCTAssertEqual(session.handleSystemNext(), .noActionableNowPlayingItem)
+    }
+
+    func testSystemSearchDeliversTheLatestNonemptyTermOnce() async throws {
+        let route = RoomSystemSearch.shared
+        _ = route.take()
+        defer { _ = route.take() }
+        let intent = SearchFreeTubeIntent()
+        intent.criteria = StringSearchCriteria(term: "first topic")
+        _ = try await intent.perform()
+        intent.criteria = StringSearchCriteria(term: "  Marathi dance  ")
+        _ = try await intent.perform()
+        route.request("   ")
+        XCTAssertEqual(route.take()?.term, "Marathi dance")
+        XCTAssertNil(route.take())
     }
 
     func testNaturalHandoffDismissesPreviewAndReleaseCannotSeekTheNextSong() async throws {

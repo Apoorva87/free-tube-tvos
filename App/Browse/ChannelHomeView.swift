@@ -28,7 +28,7 @@ enum RoomSection: String, CaseIterable {
 }
 
 enum RoomBrowseFocus: Hashable {
-    case settingsFirst, menu, featured, newPlaylist, assistantPrompt, djSearch, historyBrowse, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
+    case settingsFirst, menu, featured, newPlaylist, assistantPrompt, djSearch, searchQuery, historyBrowse, navigation(RoomSection), subscriptionFilter(String?), account, video(String), channel(String)
     case discoverCategory(RoomDiscoverCategory), discoverRefresh, discoverFind, discoverSignIn
     case shelfVideo(shelf: String, video: String)
 
@@ -71,6 +71,7 @@ private struct RoomShell: View {
     @State private var library = ChannelLibrary()
     @State private var history = RoomWatchHistoryStore()
     @State private var recentSearches = RoomSearchHistory()
+    @State private var systemSearch: RoomSystemSearch.Request?
     @State private var section = RoomSection.discover
     @State private var chosenCategory: RoomDiscoverCategory?
     @State private var categoryCatalog = RoomCategoryCatalog()
@@ -137,6 +138,17 @@ private struct RoomShell: View {
             ChannelPlayerView(session: viewing, mini: false)
         }
         .environment(library)
+        .onChange(of: RoomSystemSearch.shared.pending, initial: true) {
+            guard let request = RoomSystemSearch.shared.take() else { return }
+            accountOpen = false
+            channel = nil
+            savingVideo = nil
+            featureOptions = false
+            viewing.browseDuringPlayback()
+            lastTile = nil
+            choose(.search)
+            systemSearch = request
+        }
     }
 
     private var browse: some View {
@@ -180,7 +192,7 @@ private struct RoomShell: View {
                                        interestFeed: interestFeed, focus: $focus, openMenu: { menuOpen = true })
                                 .environment(\.fetchTileFacts, false)
                         case .search:
-                            RoomSearchView(account: account, library: library, history: recentSearches, open: { channel = $0 },
+                            RoomSearchView(account: account, library: library, history: recentSearches, systemSearch: $systemSearch, focus: $focus, open: { channel = $0 },
                                            play: onPlay, playInDJ: { video in
                                 viewing.djStation.playNow(video)
                                 choose(.dj)
@@ -321,7 +333,7 @@ private struct RoomShell: View {
         case .dj: .djSearch
         case .assistant: .assistantPrompt
         case .settings: .settingsFirst
-        case .search: .menu
+        case .search: .searchQuery
         }
     }
 
@@ -399,7 +411,7 @@ private struct RoomBrowseRail: View {
         }
         .onChange(of: focus.wrappedValue) { _, target in
             switch target {
-            case .settingsFirst, .featured, .newPlaylist, .historyBrowse, .djSearch, .video, .channel, .subscriptionFilter,
+            case .settingsFirst, .featured, .newPlaylist, .historyBrowse, .djSearch, .searchQuery, .video, .channel, .subscriptionFilter,
                  .discoverCategory, .discoverRefresh, .discoverFind, .discoverSignIn, .shelfVideo:
                 lastTile = target
             default: break

@@ -47,6 +47,8 @@ struct RoomSearchView: View {
     let account: ChannelAccount
     let library: ChannelLibrary
     let history: RoomSearchHistory
+    @Binding var systemSearch: RoomSystemSearch.Request?
+    let focus: FocusState<RoomBrowseFocus?>.Binding
     let open: (RoomChannel) -> Void
     let play: (ChannelVideo, [ChannelVideo]) -> Void
     let playInDJ: (ChannelVideo) -> Void
@@ -66,6 +68,7 @@ struct RoomSearchView: View {
             VStack(alignment: .leading, spacing: 26) {
                 HStack(spacing: 20) {
                     TextField("Channel, video or @handle", text: $query)
+                        .focused(focus, equals: .searchQuery)
                         .autocorrectionDisabled().textInputAutocapitalization(.never)
                         .submitLabel(.search).onSubmit { submit() }
                     Button("Search") { submit() }.disabled(trimmed.isEmpty)
@@ -118,6 +121,13 @@ struct RoomSearchView: View {
         }
         .scrollClipDisabled()
         .sheet(isPresented: $showAsk) { RoomAskView(initialPrompt: trimmed) }
+        .onChange(of: systemSearch, initial: true) {
+            guard let request = systemSearch else { return }
+            systemSearch = nil
+            showAsk = false
+            query = request.term
+            submit()
+        }
         .task(id: revision) { if !submitted.isEmpty { await search() } }
     }
 
