@@ -10,7 +10,11 @@ final class RoomViewingSession {
     let playback: ChannelPlayback
     let djStation: RoomDJStation
     private var waitingForDJTrack = false
-    private var startingDJTrack = false
+    private var djTrackStarted = false
+    @ObservationIgnored private var djTransport: NSKeyValueObservation?
+    @ObservationIgnored private var delayedDJPreparation: Task<Void, Never>?
+    private var djPreparationID: String?
+    private var lastDJPreparation: ContinuousClock.Instant?
     private var selectedDJTrackID: String?
     private var loadID = UUID()
     @ObservationIgnored var onVideoStarted: ((ChannelVideo) -> Void)?
@@ -32,6 +36,14 @@ final class RoomViewingSession {
         self.djStation = djStation
         self.recommendations = recommendations
         djStation.session = self
+        playback.djRequestsHeld = { [weak djStation] in
+            guard let djStation, djStation.isActive else { return false }
+            return !djStation.requestsAllowed()
+        }
+        playback.onRateLimited = { [weak djStation] deadline in
+            guard let djStation, djStation.isActive else { return }
+            djStation.hold(until: deadline)
+        }
     }
 
     var video: ChannelVideo? { queue.indices.contains(index) ? queue[index] : nil }
@@ -39,11 +51,25 @@ final class RoomViewingSession {
 
     var upcoming: [ChannelVideo] { Array(queue.dropFirst(index + 1)) }
 
+    var canFillDJQueue: Bool {
+        djTrackStarted && (playback.player.timeControlStatus == .playing || waitingForDJTrack)
+    }
+
+    var nextForPreparation: ChannelVideo? {
+        guard djStation.isActive else { return next }
+        guard djTrackStarted, playback.player.timeControlStatus == .playing, !djStation.isSearching,
+              djStation.requestsAllowed() else { return nil }
+        return next
+    }
+
     func startDJ(_ video: ChannelVideo, resetHistory: Bool) {
         selectedDJTrackID = video.id
         playsRelated = false
         quickCount = 0
-        if resetHistory { attemptedIDs = [] }
+        if resetHistory {
+            attemptedIDs = []
+            lastDJPreparation = nil
+        }
         queue = [video]
         index = 0
         presentation = .mini
@@ -58,14 +84,60 @@ final class RoomViewingSession {
         resumeDJQueue()
     }
 
+    private func cancelDJPreparation(discardItem: Bool) {
+        delayedDJPreparation?.cancel()
+        delayedDJPreparation = nil
+        djPreparationID = nil
+        if discardItem { playback.prepareNext(nil) }
+    }
+
     func suspendDJQueue() {
-        if !startingDJTrack { playback.prepareNext(nil) }
+        cancelDJPreparation(discardItem: djTrackStarted)
+    }
+
+    func holdDJQueue() {
+        if djStation.isActive { cancelDJPreparation(discardItem: true) }
+    }
+
+    private func prepareDJNext() {
+        guard djPreparationID != next?.id else { return }
+        cancelDJPreparation(discardItem: true)
+        guard let pick = next else { return }
+        djPreparationID = pick.id
+        delayedDJPreparation = Task {
+            if let lastDJPreparation {
+                try? await ContinuousClock().sleep(until: lastDJPreparation.advanced(by: .seconds(6)))
+            }
+            guard !Task.isCancelled, djPreparationID == pick.id, nextForPreparation?.id == pick.id else { return }
+            lastDJPreparation = .now
+            playback.prepareNext(pick)
+        }
     }
 
     func resumeDJQueue() {
-        guard djStation.isActive, !djStation.isSearching else { return }
+        guard djStation.isActive, !djStation.isSearching, djStation.requestsAllowed() else { return }
+        if djPreparationID != nil, djPreparationID != next?.id { cancelDJPreparation(discardItem: true) }
         if waitingForDJTrack, next != nil { advance() }
-        else if !startingDJTrack { playback.prepareNext(next) }
+        else if djTrackStarted, playback.player.timeControlStatus == .playing { prepareDJNext() }
+    }
+
+    private func watchDJTransport() {
+        let player = playback.player
+        djTransport = player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor [weak self, weak player] in
+                guard let self, let player, player === playback.player, djTrackStarted, djStation.isActive else { return }
+                if player.timeControlStatus == .playing {
+                    resumeDJQueue()
+                    djStation.fillIfLow()
+                } else if !waitingForDJTrack, let item = player.currentItem {
+                    // AVFoundation pauses at the natural end while the final queue refill may still be running.
+                    let end = item.forwardPlaybackEndTime.isNumeric ? item.forwardPlaybackEndTime : item.duration
+                    if end.isNumeric && item.currentTime() >= end { return }
+                    djStation.pauseRefill()
+                    if !playback.hasPreparedNext { cancelDJPreparation(discardItem: true) }
+                }
+            }
+        }
     }
 
     func open(_ video: ChannelVideo, in queue: [ChannelVideo]) {
@@ -119,7 +191,7 @@ final class RoomViewingSession {
         let remainder = queue[insertion...].filter { $0.id != pick.id }
         queue.replaceSubrange(insertion..., with: [pick] + remainder)
         quickCount += 1
-        playback.prepareNext(next)
+        if djStation.isActive { resumeDJQueue() } else { playback.prepareNext(next) }
         showNotice("Queued · " + pick.title)
     }
 
@@ -151,11 +223,11 @@ final class RoomViewingSession {
     }
 
     func advance() {
-        guard next != nil else { return }
+        guard next != nil, !djStation.isActive || djStation.requestsAllowed(userInitiated: true) else { return }
         selectedDJTrackID = nil
         if quickCount > 0 { quickCount -= 1 }
         index += 1
-        load(usePrepared: true)
+        beginPlayback(usePrepared: true)
     }
 
     // Keep explicit picks at the front. Replace old recommendations as soon as
@@ -174,11 +246,20 @@ final class RoomViewingSession {
         }
     }
 
-    func load(usePrepared: Bool = false, retrySelectedDJTrack: Bool = true) {
-        guard let video else { return }
+    func load() {
+        guard !djStation.isActive || djStation.requestsAllowed(userInitiated: true) else { return }
+        beginPlayback()
+    }
+
+    private func beginPlayback(usePrepared: Bool = false, retrySelectedDJTrack: Bool = true) {
+        guard let video, !djStation.isActive || djStation.requestsAllowed() else { return }
         loadID = UUID()
         let generation = loadID
-        startingDJTrack = djStation.isActive
+        // A handoff can immediately adopt any work already started for the next item.
+        cancelDJPreparation(discardItem: false)
+        djTransport?.invalidate()
+        djTransport = nil
+        djTrackStarted = false
         waitingForDJTrack = false
         loading?.cancel()
         relatedTask?.cancel()
@@ -190,22 +271,28 @@ final class RoomViewingSession {
             guard !Task.isCancelled else { return }
             await playback.play(video, usePrepared: usePrepared) {
                 guard loadID == generation, !Task.isCancelled else { return }
-                startingDJTrack = false
                 selectedDJTrackID = nil
                 onVideoStarted?(video)
                 if playsRelated { prepareRelated(for: video) }
-                else if !djStation.isActive || !djStation.isSearching { playback.prepareNext(next) }
+                else if djStation.isActive {
+                    djTrackStarted = true
+                    watchDJTransport()
+                    resumeDJQueue()
+                    djStation.fillIfLow()
+                } else { playback.prepareNext(next) }
             }
             guard generation == loadID, !Task.isCancelled else { return }
-            startingDJTrack = false
             if djStation.isActive {
-                if playback.rateLimited { return }
+                if !djStation.requestsAllowed() || playback.rateLimited {
+                    waitingForDJTrack = playback.phase == .finished
+                    return
+                }
                 // A directly selected recording stays selected if its stream cannot start.
                 if case .failed = playback.phase, selectedDJTrackID == video.id {
                     if retrySelectedDJTrack {
                         try? await Task.sleep(for: .seconds(1))
                         guard generation == loadID, !Task.isCancelled else { return }
-                        load(retrySelectedDJTrack: false)
+                        beginPlayback(retrySelectedDJTrack: false)
                     }
                     return
                 }
@@ -243,6 +330,10 @@ final class RoomViewingSession {
         selectedDJTrackID = nil
         loadID = UUID()
         waitingForDJTrack = false
+        cancelDJPreparation(discardItem: false)
+        djTransport?.invalidate()
+        djTransport = nil
+        djTrackStarted = false
         djStation.end()
         loading?.cancel()
         loading = nil

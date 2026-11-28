@@ -1,4 +1,5 @@
 import XCTest
+import os
 @testable import freeTube
 
 final class RoomCategoryTests: XCTestCase {
@@ -402,5 +403,210 @@ extension RoomCategoryTests {
         let refill = catalog.rank([repost], seed: seed, language: nil, mode: .flow, excluding: [first.id], liked: [], disliked: [])
         XCTAssertTrue(refill.isEmpty)
         XCTAssertNil(RoomDJCatalog.inferredLanguage(for: djTrack("lang0000001", "Cupid (English Lyrics)", "Singer")))
+    }
+}
+
+private actor DJRequestTrace {
+    private(set) var requests: [String] = []
+    private(set) var starts: [ContinuousClock.Instant] = []
+
+    func record(_ request: String) {
+        requests.append(request)
+        starts.append(.now)
+    }
+}
+
+extension RoomCategoryTests {
+    func testDJReadyCardsAvoidDetailLookupsAndRefillsReuseRadio() async throws {
+        let seed = djTrack("seed0000001", "Seed | English Song", "Seed Artist")
+        let tracks = (0..<16).map { djTrack(String(format: "song%07d", $0), "Track \($0) | English Song", "Artist \($0)") }
+        let trace = DJRequestTrace()
+        let catalog = RoomDJCatalog(search: { _ in await trace.record("search"); return [] },
+                                    mix: { _ in await trace.record("mix"); return tracks },
+                                    metadata: { _ in await trace.record("detail"); return nil })
+        let cold = try await catalog.station(seed: seed, language: nil, mode: .flow, excluding: [], liked: [], disliked: [])
+        let played = Set(cold.prefix(3).map(\.id))
+        let warm = try await catalog.station(seed: seed, language: nil, mode: .flow, excluding: played, liked: [], disliked: [])
+        XCTAssertEqual(Set(cold.map(\.id)), Set(tracks.map(\.id)))
+        XCTAssertEqual(Set(warm.map(\.id)), Set(tracks.map(\.id)).subtracting(played))
+        let requests = await trace.requests
+        XCTAssertEqual(requests, ["mix"])
+    }
+
+    func testDJSparseRadioUsesThreeDetailMissesAndReusesPositiveAndNegativeEntries() async throws {
+        let seed = djTrack("seed0000001", "Seed | English Song", "Seed Artist")
+        let tracks = (0..<16).map { djTrack(String(format: "song%07d", $0), "Track \($0)", "Artist \($0)") }
+        let trace = DJRequestTrace()
+        let cache = RoomDJSongCache()
+        func catalog() -> RoomDJCatalog {
+            RoomDJCatalog(search: { _ in await trace.record("search"); return [] },
+                          mix: { _ in await trace.record("mix"); return tracks },
+                          metadata: { id in
+                              await trace.record(id)
+                              return id == tracks[2].id ? .init(language: "English") : nil
+                          }, cache: cache)
+        }
+        let first = catalog()
+        let cold = try await first.station(seed: seed, language: nil, mode: .flow, excluding: [], liked: [], disliked: [])
+        let coldRequests = await trace.requests
+        XCTAssertEqual(cold.map(\.id), [tracks[2].id])
+        XCTAssertEqual(coldRequests, ["mix", "search"] + tracks.prefix(3).map(\.id))
+        let warm = try await first.station(seed: seed, language: nil, mode: .flow, excluding: [], liked: [], disliked: [])
+        XCTAssertEqual(warm, cold)
+        let warmRequests = await trace.requests
+        XCTAssertEqual(warmRequests, coldRequests)
+        let anotherCatalog = catalog()
+        let next = try await anotherCatalog.station(seed: seed, language: nil, mode: .flow, excluding: [],
+                                                    liked: [], disliked: [])
+        XCTAssertEqual(next, cold)
+        let allRequests = await trace.requests
+        XCTAssertEqual(allRequests, coldRequests + ["mix"])
+    }
+
+    func testDJBroadStationUsesBothScopedLanguagesWhenTheyNeedSeparatePages() async throws {
+        let seed = djTrack("seed0000001", "Seed | English Song", "Seed Artist")
+        let english = djTrack("engl0000001", "Happy English Song", "Singer One")
+        let hindi = djTrack("hind0000001", "Happy Hindi Song", "Singer Two")
+        let trace = DJRequestTrace()
+        let catalog = RoomDJCatalog(search: { query in
+            await trace.record(query)
+            return query.hasPrefix("Hindi") ? [hindi] : [english]
+        }, mix: { _ in await trace.record("mix"); return [] }, metadata: { _ in await trace.record("detail"); return nil })
+        let songs = try await catalog.station(seed: seed, language: nil, mode: .flow, excluding: [],
+                                              liked: [], disliked: [], topic: "happy")
+        XCTAssertEqual(Set(songs.map(\.id)), [english.id, hindi.id])
+        let requests = await trace.requests
+        XCTAssertEqual(requests, ["English happy hit official song", "Hindi happy hit official song"])
+    }
+
+    func testDJExhaustedRadioRefillPivotsThroughPlayedSong() async throws {
+        let seed = djTrack("seed0000001", "Seed | English Song", "Seed Artist")
+        let played = (0..<8).map { djTrack(String(format: "oldx%07d", $0), "Track \($0) | English Song", "Artist \($0)") }
+        let next = djTrack("next0000001", "New | English Song", "Singer")
+        let catalog = RoomDJCatalog(search: { _ in [] }, mix: { id in
+            id == seed.id ? played : [next]
+        }, metadata: { _ in nil })
+        let songs = try await catalog.station(seed: seed, language: nil, mode: .flow, excluding: Set(played.map(\.id)),
+                                              liked: [], disliked: [])
+        XCTAssertEqual(songs.map(\.id), [next.id])
+    }
+
+    func testDJTransientDetailFailuresStayPacedAcrossRefillsAndYieldToOtherCards() async throws {
+        let seed = djTrack("seed0000001", "Seed | English Song", "Seed Artist")
+        let tracks = (0..<8).map { djTrack(String(format: "song%07d", $0), "Track \($0)", "Artist \($0)") }
+        let trace = DJRequestTrace()
+        let catalog = RoomDJCatalog(search: { _ in await trace.record("search"); return [] },
+                                    mix: { _ in await trace.record("mix"); return tracks },
+                                    metadata: { id in
+            await trace.record(id)
+            if id == tracks[3].id { return .init(language: "English") }
+            throw CatalogError.unreadable
+        }, requestInterval: .milliseconds(50))
+        let first = try await catalog.station(seed: seed, language: nil, mode: .flow, excluding: [], liked: [], disliked: [])
+        let second = try await catalog.station(seed: seed, language: nil, mode: .flow, excluding: [], liked: [], disliked: [])
+        XCTAssertTrue(first.isEmpty)
+        XCTAssertEqual(second.map(\.id), [tracks[3].id])
+        let requests = await trace.requests
+        XCTAssertEqual(requests.filter { $0.hasPrefix("song") }, tracks.prefix(4).map(\.id))
+        let starts = await trace.starts
+        for (a, b) in zip(starts, starts.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(a.duration(to: b), .milliseconds(40))
+        }
+    }
+
+    func testDJConcurrentSearchesCoalesceAndSpaceDistinctRequests() async throws {
+        let sunrise = djTrack("sunr0000001", "Sunrise (Official Video)", "Artist")
+        let night = djTrack("nght0000001", "Nightcall (Official Video)", "Artist")
+        let trace = DJRequestTrace()
+        let catalog = RoomDJCatalog(search: { query in
+            await trace.record(query)
+            try await Task.sleep(for: .milliseconds(25))
+            return query.hasPrefix("Sunrise") ? [sunrise] : [night]
+        }, mix: { _ in [] }, metadata: { _ in nil }, requestInterval: .milliseconds(120))
+        async let a = catalog.search("Sunrise")
+        async let b = catalog.search("Nightcall")
+        async let c = catalog.search("Sunrise")
+        let values = try await [a, b, c]
+        XCTAssertEqual(values.map { $0.first?.id }, [sunrise.id, night.id, sunrise.id])
+        let starts = await trace.starts
+        XCTAssertEqual(starts.count, 2)
+        if starts.count == 2 {
+            XCTAssertGreaterThanOrEqual(starts[0].duration(to: starts[1]), .milliseconds(105))
+        }
+    }
+
+    func testDJRateLimitStopsRadioSearchAndDetailFallbacks() async throws {
+        let seed = djTrack("seed0000001", "Seed | English Song", "Seed Artist")
+        let unknown = djTrack("song0000001", "Track", "Artist")
+        let until = Date().addingTimeInterval(60)
+        let requests = ["mix", "search", "details"]
+        for (index, failure) in requests.enumerated() {
+            let trace = DJRequestTrace()
+            let catalog = RoomDJCatalog(search: { _ in
+                await trace.record("search")
+                if failure == "search" { throw CatalogError.rateLimited(until: until) }
+                return []
+            }, mix: { _ in
+                await trace.record("mix")
+                if failure == "mix" { throw CatalogError.rateLimited(until: until) }
+                return [unknown]
+            }, metadata: { _ in
+                await trace.record("details")
+                throw CatalogError.rateLimited(until: until)
+            })
+            do {
+                _ = try await catalog.station(seed: seed, language: nil, mode: .flow, excluding: [], liked: [], disliked: [])
+                XCTFail("A \(failure) rate limit should reach the station.")
+            } catch CatalogError.rateLimited(let deadline) {
+                XCTAssertEqual(deadline, until)
+            }
+            let observed = await trace.requests
+            XCTAssertEqual(observed, Array(requests.prefix(index + 1)))
+        }
+    }
+
+    func testDJObservesCooldownSetWhileWaitingToStartARequest() async throws {
+        let blocked = OSAllocatedUnfairLock(initialState: false)
+        let until = Date().addingTimeInterval(60)
+        let song = djTrack("song0000001", "Sunrise (Official Video)", "Artist")
+        let trace = DJRequestTrace()
+        let enteredWait = expectation(description: "Second search checked before spacing")
+        let checks = OSAllocatedUnfairLock(initialState: 0)
+        let catalog = RoomDJCatalog(search: { query in await trace.record(query); return [song] },
+                                    mix: { _ in [] }, metadata: { _ in nil }, requestInterval: .milliseconds(150),
+                                    checkCooldown: {
+            let count = checks.withLock { state in state += 1; return state }
+            if blocked.withLock({ $0 }) { throw CatalogError.rateLimited(until: until) }
+            if count == 3 { enteredWait.fulfill() }
+        })
+        _ = try await catalog.search("Sunrise")
+        let pending = Task { try await catalog.search("Sunset") }
+        await fulfillment(of: [enteredWait], timeout: 1)
+        blocked.withLock { $0 = true }
+        do {
+            _ = try await pending.value
+            XCTFail("An upstream cooldown announced during spacing should prevent the request.")
+        } catch CatalogError.rateLimited(let deadline) {
+            XCTAssertEqual(deadline, until)
+        }
+        let requests = await trace.requests
+        XCTAssertEqual(requests, ["Sunrise official music video"])
+    }
+
+    func testDJCancellingDuringRequestSpacingPreventsLookup() async throws {
+        let song = djTrack("song0000001", "Sunrise (Official Video)", "Artist")
+        let trace = DJRequestTrace()
+        let catalog = RoomDJCatalog(search: { query in await trace.record(query); return [song] },
+                                    mix: { _ in [] }, metadata: { _ in nil }, requestInterval: .seconds(2))
+        _ = try await catalog.search("Sunrise")
+        let pending = Task { try await catalog.search("Sunset") }
+        try await Task.sleep(for: .milliseconds(30))
+        pending.cancel()
+        do {
+            _ = try await pending.value
+            XCTFail("A cancelled search should stop before the next network start.")
+        } catch is CancellationError {}
+        let requests = await trace.requests
+        XCTAssertEqual(requests, ["Sunrise official music video"])
     }
 }

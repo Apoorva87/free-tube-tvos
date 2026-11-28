@@ -59,7 +59,15 @@ final class RoomDJStation {
     private(set) var language: String?
     private var searchIssue: String?
     private var stationIssue: String?
-    var message: String? { searchIssue ?? stationIssue }
+    @ObservationIgnored private let providerDeadline: () -> Date?
+    private(set) var retryAfter: Date?
+    private var retryPrompt: String?
+    private var deferredChoice: (video: ChannelVideo, prompt: String, typed: Bool)?
+    var songAwaitingRetry: ChannelVideo? { deferredChoice?.video }
+    var message: String? {
+        if let retryAfter { return CatalogError.rateLimited(until: retryAfter).localizedDescription }
+        return searchIssue ?? stationIssue
+    }
     private(set) var isSearching = false
     private var isFetching = false
     private var pendingPrompt = ""
@@ -70,9 +78,47 @@ final class RoomDJStation {
     // A chosen steering track gets one guaranteed place before generated recommendations.
     private(set) var requestedNext: ChannelVideo?
 
-    init(source: any RoomDJSource = RoomDJCatalog(), defaults: UserDefaults = .standard) {
+    convenience init(defaults: UserDefaults = .standard) {
+        self.init(source: RoomDJCatalog(), defaults: defaults, providerDeadline: { RoomDJCooldown.deadline })
+    }
+
+    init(source: any RoomDJSource, defaults: UserDefaults = .standard, providerDeadline: @escaping () -> Date? = { nil }) {
         self.source = source
         self.defaults = defaults
+        self.providerDeadline = providerDeadline
+        retryAfter = providerDeadline()
+    }
+
+    func hold(until deadline: Date) {
+        retryAfter = max(deadline, retryAfter ?? deadline)
+        if isSearching { retryPrompt = pendingPrompt }
+        searchID = UUID()
+        searchTask?.cancel()
+        searchTask = nil
+        isSearching = false
+        cancelBatch()
+        session?.holdDJQueue()
+    }
+
+    func requestsAllowed(userInitiated: Bool = false) -> Bool {
+        if let deadline = providerDeadline(), deadline > (retryAfter ?? .distantPast) { hold(until: deadline) }
+        if userInitiated, let retryAfter, retryAfter <= Date() { self.retryAfter = nil }
+        return retryAfter == nil
+    }
+
+    func retry() {
+        guard requestsAllowed(userInitiated: true) else { return }
+        if let prompt = retryPrompt {
+            submit(prompt)
+        } else if let choice = deferredChoice {
+            use(choice.video, prompt: choice.prompt, typed: choice.typed, immediately: true)
+        } else if let session, isActive {
+            if case .failed = session.playback.phase { session.load() }
+            else {
+                session.resumeDJQueue()
+                fillIfLow()
+            }
+        }
     }
 
     var isLoading: Bool { isSearching || isFetching }
@@ -88,6 +134,11 @@ final class RoomDJStation {
     func submit(_ text: String) {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
+        guard requestsAllowed(userInitiated: true) else {
+            deferredChoice = nil
+            retryPrompt = prompt
+            return
+        }
         clearSearch()
         cancelBatch()
         pendingPrompt = prompt
@@ -102,7 +153,7 @@ final class RoomDJStation {
                     lookup = language + " " + prompt
                 } else { lookup = prompt }
                 let matches = try await source.search(lookup)
-                guard generation == searchID, !Task.isCancelled else { return }
+                guard generation == searchID, !Task.isCancelled, requestsAllowed() else { return }
                 isSearching = false
                 var seen = Set<String>()
                 let unique = matches.filter { !dislikedIDs.contains($0.id) && seen.insert($0.id).inserted }
@@ -118,6 +169,7 @@ final class RoomDJStation {
                 }
             } catch {
                 guard generation == searchID, !Task.isCancelled else { return }
+                if case CatalogError.rateLimited(let until) = error { hold(until: until); return }
                 isSearching = false
                 searchIssue = error.localizedDescription
                 resumePreviousDirection()
@@ -143,6 +195,8 @@ final class RoomDJStation {
         isSearching = false
         choices = []
         pendingPrompt = ""
+        retryPrompt = nil
+        deferredChoice = nil
         searchIssue = nil
     }
 
@@ -162,6 +216,13 @@ final class RoomDJStation {
 
     private func use(_ video: ChannelVideo, prompt: String, typed: Bool, immediately: Bool) {
         guard let session else { return }
+        guard requestsAllowed(userInitiated: true) else {
+            if !isActive {
+                retryPrompt = nil
+                deferredChoice = (video, prompt, typed)
+            }
+            return
+        }
         clearSearch()
         cancelBatch()
         stationIssue = nil
@@ -183,13 +244,13 @@ final class RoomDJStation {
     }
 
     func setMode(_ newMode: RoomDJMode) {
-        guard newMode != mode else { return }
+        guard newMode != mode, requestsAllowed(userInitiated: true) else { return }
         mode = newMode
         rebuild()
     }
 
     func setLanguage(_ newLanguage: String?) {
-        guard newLanguage != language || promptLanguage != nil else { return }
+        guard newLanguage != language || promptLanguage != nil, requestsAllowed(userInitiated: true) else { return }
         language = newLanguage
         promptLanguage = newLanguage == nil ? topic.flatMap(RoomDJCatalog.language(in:)) : nil
         if let requestedNext, let explicit = newLanguage,
@@ -208,7 +269,6 @@ final class RoomDJStation {
 
     func currentChanged(to video: ChannelVideo) {
         if requestedNext?.id == video.id { requestedNext = nil }
-        fillIfLow()
     }
 
     private func cancelBatch() {
@@ -218,8 +278,13 @@ final class RoomDJStation {
         isFetching = false
     }
 
+    func pauseRefill() {
+        if isFetching { cancelBatch() }
+    }
+
     func fillIfLow() {
-        guard isActive, !isFetching, !isSearching, upcoming.count <= 3, let seed, let session else { return }
+        guard isActive, !isFetching, !isSearching, upcoming.count <= 3, let seed, let session,
+              session.canFillDJQueue, requestsAllowed() else { return }
         let generation = batchID
         let disliked = dislikedSongs
         let excluded = session.attemptedIDs.union(upcoming.map(\.id)).union(dislikedIDs)
@@ -230,7 +295,7 @@ final class RoomDJStation {
             do {
                 let tracks = try await source.station(seed: seed, language: language, mode: mode, excluding: excluded,
                                                       liked: liked, disliked: disliked, topic: topic)
-                guard generation == batchID, !Task.isCancelled else { return }
+                guard generation == batchID, !Task.isCancelled, requestsAllowed() else { return }
                 isFetching = false
                 seedLanguage = source.detectedLanguage(for: seed)
                 let remaining = upcoming
@@ -245,6 +310,7 @@ final class RoomDJStation {
                 }
             } catch {
                 guard generation == batchID, !Task.isCancelled else { return }
+                if case CatalogError.rateLimited(let until) = error { hold(until: until); return }
                 isFetching = false
                 stationIssue = "Couldn’t load more DJ songs. " + error.localizedDescription
             }

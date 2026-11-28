@@ -254,7 +254,12 @@ private struct RoomVideoMetadata: View {
     }
 }
 
+extension EnvironmentValues {
+    @Entry var fetchTileFacts = true
+}
+
 struct RoomTileByline: View {
+    @Environment(\.fetchTileFacts) private var fetchTileFacts
     let video: ChannelVideo
     var compact = false
     @Environment(ChannelLibrary.self) private var library
@@ -280,7 +285,9 @@ struct RoomTileByline: View {
             }
         }
         .lineLimit(1).foregroundStyle(RoomPalette.muted)
-        .task(id: video.id) { library.requestTileFacts(for: video.id, account: account) }
+        .task(id: video.id) {
+            if fetchTileFacts { library.requestTileFacts(for: video.id, account: account) }
+        }
     }
 }
 

@@ -4,7 +4,7 @@ import os
 
 /// Public catalog data supplements the seed radio. YouTube's radio may cross languages.
 struct RoomDJCatalog: Sendable {
-    struct Metadata: Sendable {
+    struct Metadata: Codable, Sendable {
         var language: String?
         var descriptors = Set<String>()
         var artist: String?
@@ -16,10 +16,60 @@ struct RoomDJCatalog: Sendable {
     private let fetchSearch: @Sendable (String) async throws -> [ChannelVideo]
     private let fetchMix: @Sendable (String) async throws -> [ChannelVideo]
     private let fetchMetadata: @Sendable (String) async throws -> Metadata?
-    private let cache = OSAllocatedUnfairLock(initialState: [String: Metadata]())
+    private enum Page: Hashable {
+        case mix(String), search(String)
+    }
+
+    // Serialize misses, including across overlapping searches and refills. Recheck the cache
+    // after taking the turn so two requests for the same page or song use one response.
+    private actor RequestGate {
+        static let shared = RequestGate(interval: .seconds(6))
+        let interval: Duration
+        let checkCooldown: @Sendable () throws -> Void
+        var lastStart: ContinuousClock.Instant?
+        var busy = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+
+        init(interval: Duration, checkCooldown: @escaping @Sendable () throws -> Void = RoomDJCooldown.check) {
+            self.interval = interval
+            self.checkCooldown = checkCooldown
+        }
+
+        func request<Value: Sendable>(cached: @Sendable () -> Value?,
+                                      fetch: @Sendable () async throws -> Value) async throws -> Value {
+            try Task.checkCancellation()
+            if let value = cached() { return value }
+            if busy {
+                await withCheckedContinuation { waiters.append($0) }
+            } else {
+                busy = true
+            }
+            defer {
+                if waiters.isEmpty { busy = false }
+                else { waiters.removeFirst().resume() }
+            }
+            try Task.checkCancellation()
+            if let value = cached() { return value }
+            try checkCooldown()
+            if let lastStart {
+                try await ContinuousClock().sleep(until: lastStart.advanced(by: interval))
+            }
+            try Task.checkCancellation()
+            try checkCooldown()
+            lastStart = .now
+            return try await fetch()
+        }
+    }
+
+    private let gate: RequestGate
+    private let cache: RoomDJSongCache
+    private let pages = OSAllocatedUnfairLock(initialState: [Page: (expires: ContinuousClock.Instant, videos: [ChannelVideo])]())
+    private let detailRetryDates = OSAllocatedUnfairLock(initialState: [String: ContinuousClock.Instant]())
     private let recordings = OSAllocatedUnfairLock(initialState: [String: String]())
 
     init() {
+        gate = .shared
+        cache = .shared
         let catalog = ChannelCatalog()
         fetchSearch = { try await catalog.publicSearch($0).videos }
         fetchMix = RoomCategoryFeed().musicMix(for:)
@@ -32,7 +82,11 @@ struct RoomDJCatalog: Sendable {
 
     init(search: @escaping @Sendable (String) async throws -> [ChannelVideo],
          mix: @escaping @Sendable (String) async throws -> [ChannelVideo],
-         metadata: @escaping @Sendable (String) async throws -> Metadata?) {
+         metadata: @escaping @Sendable (String) async throws -> Metadata?,
+         cache: RoomDJSongCache = RoomDJSongCache(), requestInterval: Duration = .zero,
+         checkCooldown: @escaping @Sendable () throws -> Void = {}) {
+        self.cache = cache
+        gate = RequestGate(interval: requestInterval, checkCooldown: checkCooldown)
         fetchSearch = search
         fetchMix = mix
         fetchMetadata = metadata
@@ -164,15 +218,42 @@ struct RoomDJCatalog: Sendable {
         return nil
     }
 
-    private func pages(for queries: [String]) async -> [[ChannelVideo]?] {
-        await withTaskGroup(of: (Int, [ChannelVideo]?).self) { group in
-            for (i, query) in queries.enumerated() {
-                group.addTask { [fetchSearch] in (i, try? await fetchSearch(query)) }
+    private func page(_ source: Page) async throws -> [ChannelVideo] {
+        try await gate.request {
+            pages.withLock { stored in
+                guard let hit = stored[source], hit.expires > .now else { return nil }
+                return hit.videos
             }
-            var pages = [[ChannelVideo]?](repeating: nil, count: queries.count)
-            for await (i, page) in group { pages[i] = page }
-            return pages
+        } fetch: {
+            let videos: [ChannelVideo] = switch source {
+            case .mix(let id): try await fetchMix(id)
+            case .search(let query): try await fetchSearch(query)
+            }
+            try Task.checkCancellation()
+            pages.withLock { stored in
+                if stored.count >= 32, let oldest = stored.min(by: { $0.value.expires < $1.value.expires }) {
+                    stored.removeValue(forKey: oldest.key)
+                }
+                stored[source] = (.now.advanced(by: .seconds(15 * 60)), videos)
+            }
+            return videos
         }
+    }
+
+    // Missing pages and unavailable metadata can use other evidence. A cancellation or a
+    // server-requested pause ends the entire operation, including any remaining fallbacks.
+    private func optionalPage(_ source: Page) async throws -> [ChannelVideo]? {
+        do { return try await page(source) }
+        catch {
+            try Self.checkInterruption(error)
+            return nil
+        }
+    }
+
+    private static func checkInterruption(_ error: Error) throws {
+        try Task.checkCancellation()
+        if case CatalogError.rateLimited = error { throw error }
+        if error is CancellationError { throw error }
     }
 
     private static func interleaved(_ pages: [[ChannelVideo]], excluding: Set<String> = []) -> [ChannelVideo] {
@@ -201,26 +282,31 @@ struct RoomDJCatalog: Sendable {
             let named = Self.language(in: topic)
             let languages = named.map { [$0] } ?? ["English", "Hindi"]
             let stems = named == nil ? languages.map { $0 + " " + topic } : [topic]
-            let pages = await pages(for: stems.flatMap { [$0 + " official song", $0 + " official track lyrics"] })
-            try Task.checkCancellation()
-            guard pages.contains(where: { $0 != nil }) else { throw CatalogError.unavailable("Couldn’t search for music. Try again.") }
-            let options = Self.interleaved(pages.compactMap { $0 })
-            await enrich(Array(options.prefix(6).filter { info($0).language == nil || !Self.hasMusicMetadata($0) }.map(\.id)))
-            try Task.checkCancellation()
-            return options.filter { video in
-                let facts = info(video)
-                return (facts.music ?? Self.hasMusicMetadata(video)) && facts.language.map(languages.contains) == true
+            var results = [[ChannelVideo]]()
+            var options = [ChannelVideo]()
+            for suffix in [" official song", " official track lyrics"] {
+                for stem in stems {
+                    guard let videos = try await optionalPage(.search(stem + suffix)) else { continue }
+                    results.append(videos)
+                    options = Self.interleaved(results)
+                    let ready = eligibleSongs(options, radioIDs: [], languages: languages)
+                    let represented = Set(ready.compactMap { info($0).language })
+                    if languages.allSatisfy(represented.contains) { return ready }
+                }
+                let ready = eligibleSongs(options, radioIDs: [], languages: languages)
+                if !ready.isEmpty { return ready }
             }
+            guard !results.isEmpty else { throw CatalogError.unavailable("Couldn’t search for music. Try again.") }
+            var detailAttempts = Set<String>()
+            return try await fillMissingEvidence(options, radioIDs: [], languages: languages, mode: .flow,
+                                                 attempts: &detailAttempts, limit: 2)
         }
-        let videos = try await fetchSearch(cleaned + " official music video")
+        let videos = try await page(.search(cleaned + " official music video"))
         try Task.checkCancellation()
         var candidates = Self.orderedMatches(cleaned, Self.interleaved([videos]))
-        if Self.resolvedSeed(for: query, from: candidates) == nil {
-            // A single results page may emphasize reuploads or omit the recording altogether.
-            if let alternate = try? await fetchSearch(cleaned + " original song official audio") {
-                candidates = Self.orderedMatches(cleaned, Self.interleaved([videos, alternate]))
-            }
-            try Task.checkCancellation()
+        if Self.resolvedSeed(for: query, from: candidates) == nil,
+           let alternate = try await optionalPage(.search(cleaned + " original song official audio")) {
+            candidates = Self.orderedMatches(cleaned, Self.interleaved([videos, alternate]))
         }
         return candidates
     }
@@ -293,30 +379,40 @@ struct RoomDJCatalog: Sendable {
                         music: (micro?["category"] as? String).map { $0 == "Music" })
     }
 
-    private func enrich(_ ids: [String]) async {
-        let missing = cache.withLock { stored in ids.filter { stored[$0] == nil } }
-        for start in stride(from: 0, to: missing.count, by: 4) {
-            guard !Task.isCancelled else { return }
-            await withTaskGroup(of: (String, Metadata?).self) { group in
-                for id in missing[start..<min(start + 4, missing.count)] {
-                    group.addTask { [fetchMetadata] in (id, try? await fetchMetadata(id)) }
-                }
-                for await (id, result) in group {
-                    if let result {
-                        cache.withLock { stored in
-                            if stored.count >= 400, let key = stored.keys.first { stored.removeValue(forKey: key) }
-                            stored[id] = result
-                        }
+    private func needsDetail(_ id: String) -> Bool {
+        cache.entry(for: id) == nil && detailRetryDates.withLock { dates in
+            dates[id].map { $0 <= .now } ?? true
+        }
+    }
+
+    private func loadDetails(_ id: String) async throws {
+        _ = try await gate.request {
+            needsDetail(id) ? nil : true
+        } fetch: {
+            do {
+                let metadata = try await fetchMetadata(id)
+                try Task.checkCancellation()
+                cache.store(metadata, for: id)
+            } catch {
+                try Self.checkInterruption(error)
+                // A temporary failure gets one minute to recover. A later refill can try
+                // a different card without treating the failure as a durable missing record.
+                detailRetryDates.withLock { dates in
+                    dates = dates.filter { $0.value > .now }
+                    if dates.count >= 32, let oldest = dates.min(by: { $0.value < $1.value }) {
+                        dates.removeValue(forKey: oldest.key)
                     }
+                    dates[id] = .now.advanced(by: .seconds(60))
                 }
             }
+            return true
         }
     }
 
     func detectedLanguage(for video: ChannelVideo) -> String? { info(video).language }
 
     private func info(_ video: ChannelVideo) -> Metadata {
-        var info = cache.withLock { $0[video.id] } ?? Metadata()
+        var info = cache.entry(for: video.id)?.metadata ?? Metadata()
         info.language = Self.inferredLanguage(for: video) ?? info.language
         info.descriptors.formUnion(Self.descriptors(in: video.title))
         if info.artist == nil { info.artist = Self.creditedArtist(in: video.title) }
@@ -335,9 +431,13 @@ struct RoomDJCatalog: Sendable {
 
     func station(seed: ChannelVideo, language: String?, mode: RoomDJMode, excluding: Set<String>,
                  liked: [ChannelVideo], disliked: [ChannelVideo], topic: String? = nil) async throws -> [ChannelVideo] {
-        let excluded = excluding.union(disliked.map(\.id)).union([seed.id])
-        async let radio: [ChannelVideo]? = try? fetchMix(seed.id)
-        await enrich([seed.id])
+        let votedDown = Set(disliked.map(\.id))
+        let excluded = excluding.union(votedDown).union([seed.id])
+        var detailAttempts = Set<String>()
+        if language == nil, topic == nil, info(seed).language == nil, needsDetail(seed.id) {
+            detailAttempts.insert(seed.id)
+            try await loadDetails(seed.id)
+        }
         try Task.checkCancellation()
         let seedInfo = info(seed)
         let selected = language ?? (topic == nil ? seedInfo.language : topic.flatMap(Self.language(in:)))
@@ -352,62 +452,88 @@ struct RoomDJCatalog: Sendable {
         let round = excluding.count / 8
         let popularTerms = ["hit official song", "popular music video", "top single official video", "hit song official audio"]
         let freshTerms = ["new song", "new release official audio", "latest single", "new official music video"]
-        var queries: [String] = []
-        for lang in languages {
-            let stem = [lang, direction].compactMap { $0 }.joined(separator: " ")
-            queries.append(stem + " " + popularTerms[round % popularTerms.count])
-            queries.append(stem + " " + freshTerms[round % freshTerms.count] + " " + String(year))
+        let stems = languages.map { [$0, direction].compactMap { $0 }.joined(separator: " ") }
+        let hits = stems.map { Page.search($0 + " " + popularTerms[round % popularTerms.count]) }
+        let fresh = stems.map { Page.search($0 + " " + freshTerms[round % freshTerms.count] + " " + String(year)) }
+        let lyrics = stems.map { Page.search($0 + " song official lyrics video") }
+        let override = language != nil && seedInfo.language != nil && language != seedInfo.language
+        let radio = Page.mix(seed.id)
+        var sources = round.isMultiple(of: 2) ? hits + fresh : fresh + hits
+        // Rotate in new releases on later refills. An explicit mood or language override
+        // starts with a scoped search even if the seed radio already has plenty of songs.
+        sources.insert(radio, at: topic == nil && !override && round.isMultiple(of: 2) ? 0 : stems.count)
+        sources += lyrics
+        var results = [[ChannelVideo]]()
+        var radioIDs = Set<String>()
+        var freshIDs = Set<String>()
+        var triedPivot = false
+
+        func order(_ songs: [ChannelVideo]) -> [ChannelVideo] {
+            ranked(songs, seed: seed, mode: mode, liked: liked, disliked: disliked, direction: direction,
+                   excludedIDs: excluded, freshIDs: freshIDs)
         }
-        let searches = await pages(for: queries)
-        var mix = await radio
-        if round > 0 {
-            let votedDown = Set(disliked.map(\.id))
-            let pivots = (liked + (mix ?? []).filter { excluding.contains($0.id) }).filter {
-                $0.id != seed.id && !votedDown.contains($0.id) && info($0).language.map(languages.contains) == true
+
+        for (index, source) in sources.enumerated() {
+            guard let videos = try await optionalPage(source) else { continue }
+            results.append(videos)
+            if case .mix = source { radioIDs.formUnion(videos.map(\.id)) }
+            if fresh.contains(source) { freshIDs.formUnion(videos.map(\.id)) }
+            let options = Self.interleaved(results, excluding: excluded)
+            var ready = order(eligibleSongs(options, radioIDs: radioIDs, languages: languages))
+            if ready.isEmpty, index >= 1 {
+                // A second listing can supply missing counts or language for many songs at once.
+                // Only then spend the shared three-detail budget, stopping at the first playable result.
+                let enriched = try await fillMissingEvidence(options, radioIDs: radioIDs, languages: languages,
+                                                             mode: mode, attempts: &detailAttempts, limit: 3)
+                ready = order(enriched)
             }
-            if !pivots.isEmpty, let next = try? await fetchMix(pivots[(round - 1) % pivots.count].id) {
-                mix = next + (mix ?? [])
+            if index == 0 && topic != nil && languages.count > 1 && !ready.isEmpty {
+                let represented = Set(ready.compactMap { info($0).language })
+                if !languages.allSatisfy(represented.contains) { continue }
+            }
+            // A thin cross-language result can seed a better radio. Later refills can pivot
+            // through liked or previously played songs when the original listing is exhausted.
+            if !triedPivot && ready.count < 4 && (override || round > 0) {
+                let pivots = (liked + videos.filter { excluding.contains($0.id) } + ready).filter {
+                    $0.id != seed.id && !votedDown.contains($0.id) && info($0).language.map(languages.contains) == true
+                }
+                if !pivots.isEmpty {
+                    triedPivot = true
+                    let pivot = pivots[max(0, round - 1) % pivots.count]
+                    if let more = try await optionalPage(.mix(pivot.id)) {
+                        results.append(more)
+                        radioIDs.formUnion(more.map(\.id))
+                        ready = order(eligibleSongs(Self.interleaved(results, excluding: excluded), radioIDs: radioIDs,
+                                                    languages: languages))
+                    }
+                }
+            }
+            if !ready.isEmpty { return ready }
+        }
+        guard !results.isEmpty else { throw CatalogError.unavailable("Couldn’t reach the DJ music catalog. Try again.") }
+        let options = Self.interleaved(results, excluding: excluded)
+        return order(try await fillMissingEvidence(options, radioIDs: radioIDs, languages: languages,
+                                                   mode: mode, attempts: &detailAttempts, limit: 3))
+    }
+
+    private func fillMissingEvidence(_ options: [ChannelVideo], radioIDs: Set<String>, languages: [String],
+                                     mode: RoomDJMode, attempts: inout Set<String>, limit: Int) async throws -> [ChannelVideo] {
+        for song in options {
+            guard attempts.count < limit else { break }
+            guard !attempts.contains(song.id), needsDetail(song.id) else { continue }
+            let facts = info(song)
+            guard facts.language.map(languages.contains) != false else { continue }
+            let radio = radioIDs.contains(song.id)
+            guard facts.language == nil || (!radio && !Self.hasMusicMetadata(song))
+                    || (mode == .popularShuffle && facts.views == nil) else { continue }
+            attempts.insert(song.id)
+            try await loadDetails(song.id)
+            let eligible = eligibleSongs([song], radioIDs: radioIDs, languages: languages)
+            if !eligible.isEmpty && (mode == .flow || info(song).views != nil) {
+                return eligibleSongs(options, radioIDs: radioIDs, languages: languages)
             }
         }
-        try Task.checkCancellation()
-        guard mix != nil || searches.contains(where: { $0 != nil }) else {
-            throw CatalogError.unavailable("Couldn’t reach the DJ music catalog. Try again.")
-        }
-        let mixIDs = Set((mix ?? []).map(\.id))
-        // A scoped search is stronger evidence of a requested style than a link in an unrelated seed radio.
-        let stationPages = (topic == nil ? [mix ?? []] : []) + searches.compactMap { $0 } + (topic == nil ? [] : [mix ?? []])
-        let options = Self.interleaved(stationPages, excluding: excluded)
-        // Some radio cards omit counts and language. Hydrate a bounded batch from the actual watch pages.
-        let needsEvidence = options.filter {
-            let known = info($0)
-            return known.language == nil || (!mixIDs.contains($0.id) && !Self.hasMusicMetadata($0))
-                || (mode == .popularShuffle && known.views == nil)
-        }
-        var lookup = Array(needsEvidence.prefix(9).map(\.id))
-        for song in options where lookup.count < 12 && !lookup.contains(song.id) {
-            lookup.append(song.id)
-        }
-        await enrich(lookup)
-        try Task.checkCancellation()
-        var eligible = eligibleSongs(options, radioIDs: mixIDs, languages: languages)
-        let rankedCount = mode == .popularShuffle ? eligible.filter { info($0).views != nil }.count : eligible.count
-        if rankedCount < 4 {
-            try Task.checkCancellation()
-            // An override can put most of the original radio outside the selected language.
-            // Pivot to a matching song and search lyrics listings for additional individual releases.
-            let alternateQueries = languages.map { [$0, direction, "song official lyrics video"].compactMap { $0 }.joined(separator: " ") }
-            async let alternatePages = pages(for: alternateQueries)
-            var pivotMix = [ChannelVideo]()
-            if let pivot = eligible.first { pivotMix = (try? await fetchMix(pivot.id)) ?? [] }
-            let extra = Self.interleaved([pivotMix] + (await alternatePages).compactMap { $0 },
-                                         excluding: excluded.union(eligible.map(\.id)))
-            let lookups = extra.filter { info($0).language == nil || info($0).views == nil || !Self.hasMusicMetadata($0) }
-            await enrich(Array(lookups.prefix(10).map(\.id)))
-            try Task.checkCancellation()
-            eligible += eligibleSongs(extra, radioIDs: mixIDs.union(pivotMix.map(\.id)), languages: languages)
-        }
-        return ranked(eligible, seed: seed, mode: mode, liked: liked, disliked: disliked, direction: direction,
-                      excludedIDs: excluded, freshIDs: Set(searches.enumerated().filter { $0.offset % 2 == 1 }.flatMap { ($0.element ?? []).map(\.id) }))
+        return eligibleSongs(options, radioIDs: radioIDs, languages: languages)
     }
 
     private func eligibleSongs(_ options: [ChannelVideo], radioIDs: Set<String>, languages: [String]) -> [ChannelVideo] {

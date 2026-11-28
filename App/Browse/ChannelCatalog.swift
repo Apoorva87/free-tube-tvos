@@ -83,12 +83,14 @@ struct RoomVideoFacts: Sendable {
 
 enum CatalogError: LocalizedError {
     case unavailable(String)
+    case rateLimited(until: Date)
     case unreadable
     case channelMissing
     case playlistMissing
 
     var errorDescription: String? {
         switch self {
+        case .rateLimited(let until): "YouTube is limiting requests. Try again after " + until.formatted(date: .abbreviated, time: .shortened) + "."
         case .unavailable(let message): message
         case .unreadable: "YouTube returned an unreadable response. Try again."
         case .channelMissing: "This channel could not be found. Check its YouTube handle or channel ID."
@@ -476,6 +478,9 @@ struct ChannelCatalog: Sendable {
     private func data(_ request: URLRequest) async throws -> Data {
         let (bytes, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw CatalogError.unreadable }
+        if http.statusCode == 429, request.url?.host == "www.youtube.com" {
+            throw RoomDJCooldown.error(for: http)
+        }
         guard (200..<300).contains(http.statusCode) else {
             if let reason = try? JSONDecoder().decode(APIError.self, from: bytes) {
                 if http.statusCode == 404, reason.error.errors?.contains(where: { $0.reason == "playlistNotFound" }) == true {

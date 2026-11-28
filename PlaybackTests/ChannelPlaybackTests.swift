@@ -237,14 +237,14 @@ extension ChannelPlaybackTests {
 }
 
 private struct DJFixtureCatalog: RoomDJSource {
-    let searchResults: @Sendable (String) async -> [ChannelVideo]
-    let recommendations: @Sendable (ChannelVideo, Set<String>) async -> [ChannelVideo]
+    let searchResults: @Sendable (String) async throws -> [ChannelVideo]
+    let recommendations: @Sendable (ChannelVideo, Set<String>) async throws -> [ChannelVideo]
 
-    func search(_ query: String) async throws -> [ChannelVideo] { await searchResults(query) }
+    func search(_ query: String) async throws -> [ChannelVideo] { try await searchResults(query) }
 
     func station(seed: ChannelVideo, language: String?, mode: RoomDJMode, excluding: Set<String>,
                  liked: [ChannelVideo], disliked: [ChannelVideo], topic: String?) async throws -> [ChannelVideo] {
-        await recommendations(seed, excluding)
+        try await recommendations(seed, excluding)
     }
 
     func rank(_ videos: [ChannelVideo], seed: ChannelVideo, language: String?, mode: RoomDJMode,
@@ -257,6 +257,8 @@ private struct DJFixtureCatalog: RoomDJSource {
 // Deliberately completes even after the awaiting request has been cancelled.
 private actor DJRequestGate {
     private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var calls = 0
+    func count() -> Int { calls += 1; return calls }
     var waiting: Bool { continuation != nil }
     func suspend() async { await withCheckedContinuation { continuation = $0 } }
     func release() { continuation?.resume(); continuation = nil }
@@ -293,23 +295,198 @@ extension ChannelPlaybackTests {
     func testDJRateLimitHoldsTheRecordingAndUpcomingQueue() async throws {
         let seed = djSong("B_6d3RBiEN0", "Gulabi Sadi | Marathi Song")
         let next = djSong("sUf2PtEZris", "Shaky | Marathi Song")
-        let catalog = DJFixtureCatalog(searchResults: { _ in [seed] }, recommendations: { _, _ in [next] })
+        let gate = DJRequestGate()
+        let catalog = DJFixtureCatalog(searchResults: { _ in XCTFail("Unexpected search"); return [] },
+                                       recommendations: { _, _ in XCTFail("Unexpected refill"); return [] })
         let station = RoomDJStation(source: catalog)
         var attempts = 0
         let playback = ChannelPlayback(itemResolver: { _ in
             attempts += 1
+            await gate.suspend()
             throw PublicPlayerError.badResponse(429)
         })
         let session = RoomViewingSession(playback: playback, djStation: station)
         defer { session.close() }
         station.playNow(seed)
-        try await djWait("the provider rate limit and the next recommendation") {
-            playback.rateLimited && session.next?.id == next.id
-        }
+        try await djWait("the seed resolver") { await gate.waiting }
+        station.steer(toward: next)
+        await gate.release()
+        try await djWait("the provider rate limit") { playback.rateLimited && station.retryAfter != nil }
+        session.load()
+        session.advance()
+        station.fillIfLow()
+        station.submit("a different song")
         try await Task.sleep(for: .milliseconds(1200))
         XCTAssertEqual(attempts, 1)
         XCTAssertEqual(session.video?.id, seed.id)
         XCTAssertEqual(session.next?.id, next.id)
+    }
+
+    func testDJCatalogCooldownPreservesPlaybackAndWaitsForExplicitRetry() async throws {
+        let seed = djSong("seed", "Seed Song")
+        let next = djSong("next", "Requested next song")
+        let fresh = djSong("fresh", "Fresh song")
+        let calls = DJRequestGate()
+        let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { _, _ in
+            if await calls.count() == 1 { throw CatalogError.rateLimited(until: Date().addingTimeInterval(1)) }
+            return [fresh]
+        })
+        let station = RoomDJStation(source: catalog)
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let playback = ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: url) })
+        let session = RoomViewingSession(playback: playback, djStation: station)
+        defer { session.close() }
+        station.playNow(seed)
+        station.steer(toward: next)
+        try await djWait("catalog cooldown during playback") { station.retryAfter != nil }
+        XCTAssertEqual(session.next?.id, next.id)
+        let item = try XCTUnwrap(playback.player.currentItem)
+        item.forwardPlaybackEndTime = playback.player.currentTime() + CMTime(seconds: 0.2, preferredTimescale: 600)
+        try await djWait("the original song to finish") { playback.phase == .finished }
+        station.retry()
+        session.advance()
+        try await djWait("the cooldown to elapse") { (station.retryAfter ?? .distantFuture) <= Date() }
+        XCTAssertEqual(session.video?.id, seed.id)
+        XCTAssertEqual(session.next?.id, next.id)
+        let beforeRetry = await calls.calls
+        XCTAssertEqual(beforeRetry, 1)
+        station.retry()
+        try await djWait("the preserved next song and a resumed refill") {
+            session.video?.id == next.id && session.next?.id == fresh.id
+        }
+    }
+
+    func testDJPreparesOnlyTheLatestQueueHeadAndExplicitAdvanceBypassesTheDelay() async throws {
+        let seed = djSong("seed", "Seed song")
+        let first = djSong("first", "First recommendation")
+        let intermediate = djSong("intermediate", "Intermediate request")
+        let latest = djSong("latest", "Latest request")
+        let immediate = djSong("immediate", "Play now")
+        let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { anchor, _ in
+            anchor.id == seed.id ? [first] : []
+        })
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var resolutions = [String]()
+        let playback = ChannelPlayback(itemResolver: { video in
+            resolutions.append(video.id)
+            return AVPlayerItem(url: url)
+        })
+        let station = RoomDJStation(source: catalog)
+        let session = RoomViewingSession(playback: playback, djStation: station)
+        defer { session.close() }
+        station.playNow(seed)
+        try await djWait("the first preloaded recommendation") { playback.hasPreparedNext }
+        station.steer(toward: intermediate)
+        station.steer(toward: latest)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(resolutions, [seed.id, first.id])
+        XCTAssertEqual(session.next?.id, latest.id)
+        try await djWait("the stable queue head to prepare") { playback.hasPreparedNext }
+        XCTAssertEqual(resolutions, [seed.id, first.id, latest.id])
+        station.steer(toward: immediate)
+        let advancedAt = ContinuousClock.now
+        session.advance()
+        try await djWait("explicit advance to resolve the request") {
+            resolutions.last == immediate.id && playback.player.currentTime().seconds > 0.1
+        }
+        XCTAssertLessThan(ContinuousClock.now - advancedAt, .seconds(5))
+        XCTAssertEqual(session.video?.id, immediate.id)
+        XCTAssertEqual(resolutions, [seed.id, first.id, latest.id, immediate.id])
+    }
+
+    func testDJThrottledPrefetchCannotStartASecondResolverAtHandoff() async throws {
+        let seed = djSong("seed", "Seed song")
+        let next = djSong("next", "Next song")
+        let gate = DJRequestGate()
+        let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { _, _ in [next] })
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var nextAttempts = 0
+        let playback = ChannelPlayback(itemResolver: { video in
+            if video.id == next.id {
+                nextAttempts += 1
+                if nextAttempts == 1 { await gate.suspend() }
+                throw PublicPlayerError.badResponse(429)
+            }
+            return AVPlayerItem(url: url)
+        })
+        let station = RoomDJStation(source: catalog)
+        let session = RoomViewingSession(playback: playback, djStation: station)
+        defer { session.close() }
+        station.playNow(seed)
+        try await djWait("preparation of the next song") { await gate.waiting }
+        let item = try XCTUnwrap(playback.player.currentItem)
+        item.forwardPlaybackEndTime = playback.player.currentTime() + CMTime(seconds: 0.2, preferredTimescale: 600)
+        try await djWait("the session to wait for the prepared song") { session.video?.id == next.id }
+        await gate.release()
+        try await djWait("the throttled handoff to stop") {
+            if case .failed = playback.phase { return station.retryAfter != nil }
+            return false
+        }
+        XCTAssertEqual(nextAttempts, 1)
+        XCTAssertEqual(session.video?.id, next.id)
+    }
+
+    func testDJRetainsExactSearchSelectionWhenOpenedDuringCooldown() async throws {
+        let seed = djSong("seed", "Exact song")
+        let deadline = Date().addingTimeInterval(0.15)
+        let catalog = DJFixtureCatalog(searchResults: { _ in XCTFail("Unexpected search"); return [] },
+                                       recommendations: { _, _ in [] })
+        let station = RoomDJStation(source: catalog, providerDeadline: { deadline > Date() ? deadline : nil })
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var attempts = 0
+        let playback = ChannelPlayback(itemResolver: { _ in
+            attempts += 1
+            return AVPlayerItem(url: url)
+        })
+        let session = RoomViewingSession(playback: playback, djStation: station)
+        defer { session.close() }
+        station.playNow(seed)
+        station.retry()
+        XCTAssertEqual(station.songAwaitingRetry?.id, seed.id)
+        XCTAssertEqual(attempts, 0)
+        try await djWait("the startup cooldown to elapse") { deadline <= Date() }
+        station.retry()
+        try await djWait("the original selection to play") { playback.player.currentTime().seconds > 0.1 }
+        XCTAssertEqual(session.video?.id, seed.id)
+        XCTAssertEqual(attempts, 1)
+        XCTAssertNil(station.songAwaitingRetry)
+    }
+
+    func testDJPausingCancelsRefillAndResumingReplenishesTheQueue() async throws {
+        let seed = djSong("seed", "Seed song")
+        let stale = djSong("stale", "Cancelled lookup")
+        let fresh = djSong("fresh", "Current lookup")
+        let gate = DJRequestGate()
+        let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { _, _ in
+            if await gate.count() == 1 {
+                await gate.suspend()
+                return [stale]
+            }
+            return [fresh]
+        })
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let station = RoomDJStation(source: catalog)
+        let playback = ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: url) })
+        let session = RoomViewingSession(playback: playback, djStation: station)
+        defer { session.close() }
+        station.playNow(seed)
+        try await djWait("a refill during playback") { await gate.waiting }
+        let item = try XCTUnwrap(playback.player.currentItem)
+        playback.player.pause()
+        try await djWait("refill cancellation after pause") { !station.isLoading }
+        await gate.release()
+        station.fillIfLow()
+        XCTAssertNil(session.next)
+        playback.player.play()
+        try await djWait("one fresh refill on resume") { session.next?.id == fresh.id }
+        XCTAssertTrue(item === playback.player.currentItem)
+        let count = await gate.calls
+        XCTAssertEqual(count, 2)
     }
 
     func testFailedDJSeedRetriesAndStaysSelectedUntilTheViewerActs() async throws {
@@ -335,9 +512,11 @@ extension ChannelPlaybackTests {
             return attempts == 2
         }
         XCTAssertEqual(session.video?.id, seed.id)
-        XCTAssertEqual(session.next?.id, next.id)
+        XCTAssertNil(session.next, "A seed that never played must not launch background catalog lookups")
         session.load()
-        try await djWait("retry of the same recording") { playback.player.currentTime().seconds > 0.1 }
+        try await djWait("retry of the same recording and its first refill") {
+            playback.player.currentTime().seconds > 0.1 && session.next?.id == next.id
+        }
         XCTAssertEqual(session.video?.id, seed.id)
         XCTAssertEqual(attempts, 3)
     }
@@ -492,7 +671,7 @@ extension ChannelPlaybackTests {
         let session = RoomViewingSession(playback: ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: url) }), djStation: restored)
         defer { session.close() }
         restored.playNow(seed)
-        try await djWait("a refill after earlier feedback metadata was evicted") { !restored.isLoading }
+        try await djWait("a refill after earlier feedback metadata was evicted") { !restored.upcoming.isEmpty }
         XCTAssertEqual(restored.upcoming.map(\.id), [allowed.id])
         restored.dislike(blocked)
         XCTAssertNil(restored.feedback(for: blocked), "Toggling the dislike releases the durable exclusion")

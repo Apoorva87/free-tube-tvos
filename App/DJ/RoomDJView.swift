@@ -14,6 +14,7 @@ struct RoomDJView: View {
     @State private var pick: ChannelVideo?
     @State private var selectingMode = false
     @State private var selectingLanguage = false
+    @State private var handoffFailed = false
     @State private var transportStatus = AVPlayer.TimeControlStatus.paused
 
     private var station: RoomDJStation { viewing.djStation }
@@ -58,8 +59,28 @@ struct RoomDJView: View {
             stationControls
             if station.isLoading { RoomLoading(text: "Finding songs…").accessibilityIdentifier("dj-loading") }
             if let message = station.message {
-                Text(message).font(.system(size: 23)).foregroundStyle(RoomPalette.muted)
-                    .accessibilityIdentifier("dj-message")
+                HStack(spacing: 16) {
+                    Text(message).font(.system(size: 23)).foregroundStyle(RoomPalette.muted)
+                        .accessibilityIdentifier(station.retryAfter != nil && station.isActive && playbackFailed ? "dj-playback-error" : "dj-message")
+                    if let deadline = station.retryAfter {
+                        TimelineView(.explicit([Date.distantPast, deadline])) { tick in
+                            Button("Retry") { station.retry() }
+                                .buttonStyle(RoomToolbarStyle()).disabled(tick.date < deadline)
+                                .accessibilityIdentifier("dj-retry")
+                        }
+                    }
+                }
+                if let song = station.songAwaitingRetry {
+                    HStack(spacing: 16) {
+                        Text(song.title).font(.headline).lineLimit(1)
+                        youtubeButton(for: song)
+                    }
+                    .buttonStyle(RoomToolbarStyle())
+                }
+            }
+            if handoffFailed {
+                Text("YouTube didn’t open. Check that the YouTube app is installed on this Apple TV.")
+                    .font(.system(size: 23)).foregroundStyle(RoomPalette.muted)
             }
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 25) {
@@ -90,8 +111,9 @@ struct RoomDJView: View {
             // Leave the player and remote controls their own column while browsing songs.
             .padding(.trailing, viewing.presentation == .mini ? ChannelPlayerView.miniVideoWidth + 30 : 0)
         }
-        .task(id: musicInterests) { await interestFeed.load(rows: musicInterests) }
-        .task(id: musicHistory.map(\.id)) { await music.load(history: musicHistory) }
+        // Discover owns the network refresh for these shelves. Listening and voting update the display locally.
+        .onDisappear { if station.isSearching { station.cancelChoices() } }
+        .onChange(of: viewing.video?.id) { handoffFailed = false }
         .onReceive(viewing.playback.player.publisher(for: \.timeControlStatus).receive(on: RunLoop.main)) {
             transportStatus = $0
         }
@@ -157,18 +179,21 @@ struct RoomDJView: View {
             Text(video.title).font(.system(size: 34, weight: .semibold)).lineLimit(2)
                 .accessibilityIdentifier("dj-now-" + video.id)
             Text(video.channelTitle).font(.system(size: 23)).foregroundStyle(RoomPalette.muted)
-            if case .failed(let reason) = viewing.playback.phase {
-                Text(viewing.playback.rateLimited ? "YouTube is limiting playback requests. Try again later." : reason)
+            if case .failed(let reason) = viewing.playback.phase, station.retryAfter == nil {
+                Text(reason)
                     .font(.system(size: 23)).foregroundStyle(RoomPalette.muted).lineLimit(2)
                     .accessibilityIdentifier("dj-playback-error")
             }
             HStack(spacing: 14) {
-                if case .failed = viewing.playback.phase {
+                if case .failed = viewing.playback.phase, station.retryAfter == nil {
                     Button("Retry") { viewing.load() }.accessibilityIdentifier("dj-retry")
+                }
+                if station.retryAfter != nil || playbackFailed {
+                    youtubeButton(for: video)
                 }
                 feedbackButtons(for: video)
                 Button { viewing.advance() } label: { Label("Skip", systemImage: "forward.end") }
-                    .accessibilityIdentifier("dj-skip").disabled(viewing.next == nil)
+                    .accessibilityIdentifier("dj-skip").disabled(viewing.next == nil || station.retryAfter != nil)
             }
             .buttonStyle(RoomToolbarStyle()).focusSection()
         }
@@ -187,6 +212,21 @@ struct RoomDJView: View {
         }
         .accessibilityAddTraits(vote == .dislike ? .isSelected : [])
         .accessibilityIdentifier("dj-dislike")
+    }
+
+    private func youtubeButton(for video: ChannelVideo) -> some View {
+        Button("Open in YouTube") {
+            Task {
+                if await ChannelPlayerView.openYouTube(video) { viewing.close() }
+                else { handoffFailed = true }
+            }
+        }
+        .accessibilityIdentifier("dj-open-youtube")
+    }
+
+    private var playbackFailed: Bool {
+        if case .failed = viewing.playback.phase { return true }
+        return false
     }
 
     private var playbackStatus: String {

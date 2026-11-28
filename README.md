@@ -30,7 +30,9 @@ The current song plays in the corner while you browse **Up next**. Enter **more 
 
 **Flow** uses available mood and published tempo metadata. **Popular Shuffle** draws from highly viewed matches. A word-based station starts with English and Hindi by default. A station based on a specific recording uses the language the catalog can identify. Use the globe control to choose a language yourself.
 
-If YouTube limits playback requests, DJ holds the current song and queue. Use **Retry** later or **Skip** to select the next song.
+DJ spaces its catalog requests at least six seconds apart and runs one at a time. It reads the information on song tiles first and looks up missing details while music plays. Public song details stay in a local cache for seven days. Search and radio results can be reused for 15 minutes.
+
+If YouTube limits requests, DJ holds the queue and shows when you can try **Retry**. It honors YouTube’s requested wait and uses a 15-minute pause when YouTube gives no time. Choose **Open in YouTube** to try the selected recording in the official app.
 
 ## Run in Xcode
 

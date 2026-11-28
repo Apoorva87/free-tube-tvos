@@ -90,3 +90,18 @@ private func resolve(using fixture: PublicPlayerFixture.Type) async throws -> Pu
         try await resolve(using: RestrictedPlayerFixture.self)
     }
 }
+
+private final class LimitedPlayerFixture: PublicPlayerFixture, @unchecked Sendable {
+    override func startLoading() {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 429, httpVersion: nil,
+                                       headerFields: ["Retry-After": "120"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
+@Test func preservesProviderRetryAfterForPlaybackCooldown() async {
+    await #expect(throws: PublicPlayerError.rateLimited(retryAfter: "120")) {
+        try await resolve(using: LimitedPlayerFixture.self)
+    }
+}

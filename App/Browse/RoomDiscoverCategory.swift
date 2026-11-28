@@ -239,6 +239,9 @@ struct RoomCategoryFeed: Sendable {
         request.setValue("text/html", forHTTPHeaderField: "Accept")
         let (data, response) = try await catalog.session.data(for: request)
         try Task.checkCancellation()
+        if let http = response as? HTTPURLResponse, http.statusCode == 429 {
+            throw RoomDJCooldown.error(for: http)
+        }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw CatalogError.unavailable("YouTube couldn’t load the song mix.")
         }

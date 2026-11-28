@@ -178,6 +178,7 @@ private struct RoomShell: View {
                         case .dj:
                             RoomDJView(history: history.videos, preferences: preferences, music: categoryCatalog.music,
                                        interestFeed: interestFeed, focus: $focus, openMenu: { menuOpen = true })
+                                .environment(\.fetchTileFacts, false)
                         case .search:
                             RoomSearchView(account: account, library: library, history: recentSearches, open: { channel = $0 },
                                            play: onPlay, playInDJ: { video in

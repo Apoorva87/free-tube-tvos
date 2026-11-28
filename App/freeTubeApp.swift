@@ -21,7 +21,7 @@ struct freeTubeApp: App {
                     viewing.playback.configureOverlap(seconds: seconds)
                 }
                 .onChange(of: softFade, initial: true) { _, enabled in
-                    viewing.playback.configureSoftFade(enabled, next: viewing.next)
+                    viewing.playback.configureSoftFade(enabled, next: viewing.nextForPreparation)
                 }
                 .onChange(of: phase) { _, phase in
                     if phase == .background { helper.stop() }

@@ -13,6 +13,7 @@ public enum PublicPlayerError: LocalizedError, Equatable {
     case differentVideo
     case unsupported
     case badResponse(Int)
+    case rateLimited(retryAfter: String?)
 
     public var errorDescription: String? {
         switch self {
@@ -20,6 +21,7 @@ public enum PublicPlayerError: LocalizedError, Equatable {
         case .unavailable: "YouTube did not return player details for this video."
         case .differentVideo: "The returned video does not match your channel selection."
         case .unsupported: "YouTube did not offer a stream this Apple TV can play directly."
+        case .rateLimited: "YouTube is limiting playback requests. Try again later."
         case .badResponse(let status): "YouTube returned HTTP \(status) for this video."
         }
     }
@@ -79,6 +81,9 @@ public struct PublicVideoPlayer: Sendable {
     private func data(for request: URLRequest) async throws -> Data {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw PublicPlayerError.unavailable }
+        if http.statusCode == 429 {
+            throw PublicPlayerError.rateLimited(retryAfter: http.value(forHTTPHeaderField: "Retry-After"))
+        }
         guard http.statusCode == 200 else { throw PublicPlayerError.badResponse(http.statusCode) }
         return data
     }

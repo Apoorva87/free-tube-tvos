@@ -113,14 +113,18 @@ struct ChannelPlayerView: View {
     }
 
     private func openInYouTube(_ video: ChannelVideo) async {
+        if await Self.openYouTube(video) { session.close() }
+        else { handoffFailed = true }
+    }
+
+    static func openYouTube(_ video: ChannelVideo) async -> Bool {
         var link = URLComponents()
         link.scheme = "youtube"
         link.host = "www.youtube.com"
         link.path = "/watch"
         link.queryItems = [URLQueryItem(name: "v", value: video.id)]
-        guard let url = link.url else { handoffFailed = true; return }
-        if await UIApplication.shared.open(url) { session.close() }
-        else { handoffFailed = true }
+        guard let url = link.url else { return false }
+        return await UIApplication.shared.open(url)
     }
 }
 
@@ -237,6 +241,9 @@ final class ChannelPlayback {
     enum Phase: Equatable { case loading, playing, finished, failed(String) }
     var phase = Phase.loading
     private(set) var rateLimited = false
+    @ObservationIgnored var onRateLimited: ((Date) -> Void)?
+    @ObservationIgnored var djRequestsHeld: (() -> Bool)?
+    @ObservationIgnored private var preparedStatus: NSKeyValueObservation?
     static let softFadeKey = "room.playback.soft-fade"
     static let overlapKey = "room.playback.overlap-seconds"
     static let defaultOverlap = 0.55
@@ -293,6 +300,7 @@ final class ChannelPlayback {
         let generation = activeID
         preparing = Task {
             do {
+                guard djRequestsHeld?() != true, !Task.isCancelled else { return }
                 let item = try await resolveItem(video)
                 guard !Task.isCancelled, activeID == generation, player.currentItem === current else { return }
                 if softFadeEnabled {
@@ -309,13 +317,25 @@ final class ChannelPlayback {
                     player.insert(item, after: current)
                 }
                 preparedItem = item
+                preparedStatus = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+                    guard item.status == .failed else { return }
+                    Task { @MainActor in
+                        guard let self, self.preparedItem === item else { return }
+                        if self.hasRateLimitError(item) { self.reportRateLimit(retryAfter: nil) }
+                    }
+                }
             } catch {
-                if !Task.isCancelled { preparedID = nil }
+                if !Task.isCancelled {
+                    preparedID = nil
+                    _ = recordRateLimit(error)
+                }
             }
         }
     }
 
     private func discardPrepared() {
+        preparedStatus?.invalidate()
+        preparedStatus = nil
         preparing?.cancel()
         preparing = nil
         if let preparedItem, player.items().contains(preparedItem), player.currentItem !== preparedItem {
@@ -331,6 +351,26 @@ final class ChannelPlayback {
         setFade(0)
     }
 
+    private func hasRateLimitError(_ item: AVPlayerItem) -> Bool {
+        item.errorLog()?.events.last?.errorStatusCode == 429
+    }
+
+    private func reportRateLimit(retryAfter: String?) {
+        let requested = RoomDJCooldown.retryDate(retryAfter)
+        let until = itemResolver == nil ? RoomDJCooldown.record(until: requested) : requested
+        onRateLimited?(until)
+    }
+
+    private func recordRateLimit(_ error: Error) -> Bool {
+        guard let failure = error as? PublicPlayerError else { return false }
+        switch failure {
+        case .rateLimited(let retryAfter): reportRateLimit(retryAfter: retryAfter)
+        case .badResponse(429): reportRateLimit(retryAfter: nil)
+        default: return false
+        }
+        return true
+    }
+
     private func resolveItem(_ video: ChannelVideo) async throws -> AVPlayerItem {
         if let itemResolver { return try await itemResolver(video) }
         let stream = try await resolver.stream(videoID: video.id, channelID: video.channelID)
@@ -344,6 +384,12 @@ final class ChannelPlayback {
         if usePrepared, preparedID == video.id, preparedItem == nil {
             await preparing?.value
             guard !Task.isCancelled else { return }
+        }
+        // A pending prefetch can receive a 429 while the current track is ending.
+        if djRequestsHeld?() == true {
+            rateLimited = true
+            phase = .failed(PublicPlayerError.rateLimited(retryAfter: nil).localizedDescription)
+            return
         }
         let warm = usePrepared && preparedID == video.id ? preparedItem : nil
         let incoming = incomingPlayer
@@ -395,6 +441,12 @@ final class ChannelPlayback {
                 case .started: recordPlaybackStart(onStart)
                 case .status(.readyToPlay): phase = .playing
                 case .status(.failed), .failed:
+                    if hasRateLimitError(item) {
+                        rateLimited = true
+                        reportRateLimit(retryAfter: nil)
+                        phase = .failed(PublicPlayerError.rateLimited(retryAfter: nil).localizedDescription)
+                        return
+                    }
                     // A URL resolved during a long video can expire before its first frame.
                     if reuse != nil, progressObserver != nil {
                         await play(video, onStart: onStart)
@@ -411,7 +463,7 @@ final class ChannelPlayback {
             }
         } catch {
             guard !Task.isCancelled, id == activeID else { return }
-            rateLimited = (error as? PublicPlayerError) == .badResponse(429)
+            rateLimited = recordRateLimit(error)
             phase = .failed(error.localizedDescription)
         }
     }
