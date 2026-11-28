@@ -245,6 +245,8 @@ final class freeTubeNavigationTests: XCTestCase {
         selectWithRemote(app.buttons[queuedID], in: app)
         let remove = app.buttons["dj-remove-upcoming"]
         XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["dj-play-next"].exists)
+        XCTAssertEqual(app.buttons["dj-queue-end"].label, "Move to End of Queue")
         selectWithRemote(remove, in: app)
         XCTAssertTrue(app.buttons[queuedID].waitForNonExistence(timeout: 5))
         XCTAssertTrue(now.exists)

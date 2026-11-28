@@ -91,6 +91,22 @@ final class RoomViewingSession {
         resumeDJQueue()
     }
 
+    func placeDJUpcoming(_ song: ChannelVideo, at position: RoomDJQueuePosition) {
+        let start = index + 1
+        if let existing = queue[start...].firstIndex(where: { $0.id == song.id }) {
+            queue.remove(at: existing)
+            if existing < start + quickCount { quickCount -= 1 }
+        }
+        switch position {
+        case .next:
+            queue.insert(song, at: start)
+            quickCount += 1
+        case .end:
+            queue.append(song)
+        }
+        resumeDJQueue()
+    }
+
     func removeDJUpcoming(id: String) {
         let start = index + 1
         guard let position = queue[start...].firstIndex(where: { $0.id == id }) else { return }

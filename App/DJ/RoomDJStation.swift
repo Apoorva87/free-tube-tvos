@@ -10,6 +10,8 @@ enum RoomDJFeedback: String, Codable, Sendable {
     case like, dislike
 }
 
+enum RoomDJQueuePosition { case next, end }
+
 protocol RoomDJSource: Sendable {
     func detectedLanguage(for video: ChannelVideo) -> String?
     func search(_ query: String) async throws -> [ChannelVideo]
@@ -214,7 +216,7 @@ final class RoomDJStation {
 
     func choose(_ video: ChannelVideo) {
         guard choices.contains(where: { $0.id == video.id }) else { return }
-        use(video, prompt: pendingPrompt, typed: true, immediately: !isActive)
+        steer(toward: video, prompt: pendingPrompt)
     }
 
     func playNow(_ video: ChannelVideo) {
@@ -222,8 +224,19 @@ final class RoomDJStation {
         use(video, prompt: isChoice ? pendingPrompt : video.title, typed: isChoice, immediately: true)
     }
 
-    func steer(toward video: ChannelVideo) {
-        use(video, prompt: video.title, typed: false, immediately: !isActive)
+    func steer(toward video: ChannelVideo, prompt: String? = nil) {
+        use(video, prompt: prompt ?? video.title, typed: prompt != nil, immediately: !isActive)
+    }
+
+    func enqueue(_ video: ChannelVideo, at position: RoomDJQueuePosition) {
+        guard isActive, let session, let current = session.video, current.id != video.id else { return }
+        let wasSearching = isSearching || !choices.isEmpty
+        if wasSearching { clearSearch() }
+        removedIDs.remove(video.id)
+        candidates.removeAll { $0.id == video.id }
+        if position == .end, requestedNext?.id == video.id { requestedNext = nil }
+        session.placeDJUpcoming(video, at: position)
+        if wasSearching { fillIfLow() }
     }
 
     private func use(_ video: ChannelVideo, prompt: String, typed: Bool, immediately: Bool) {

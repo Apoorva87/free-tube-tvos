@@ -879,6 +879,47 @@ extension ChannelPlaybackTests {
 }
 
 extension ChannelPlaybackTests {
+    func testDJManualEditsKeepThePlayingItemAndEveryOtherSongInOrder() async throws {
+        let seed = djSong("seed", "Playing")
+        let first = djSong("first", "First suggestion")
+        let second = djSong("second", "Second suggestion")
+        let pick = djSong("pick", "Play next")
+        let tail = djSong("tail", "Play last")
+        let calls = DJRequestGate()
+        let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { _, _ in
+            _ = await calls.count()
+            return [first, second]
+        })
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let playback = ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: url) })
+        let station = RoomDJStation(source: catalog)
+        let session = RoomViewingSession(playback: playback, djStation: station)
+        defer { session.close() }
+
+        station.playNow(seed)
+        try await djWait("both DJ suggestions") { station.upcoming.map(\.id) == ["first", "second"] }
+        let original = try XCTUnwrap(playback.player.currentItem)
+        station.enqueue(pick, at: .next)
+        XCTAssertEqual(station.upcoming.map(\.id), ["pick", "first", "second"])
+        station.enqueue(tail, at: .end)
+        station.enqueue(tail, at: .end)
+        XCTAssertEqual(station.upcoming.map(\.id), ["pick", "first", "second", "tail"])
+        station.enqueue(second, at: .next)
+        XCTAssertEqual(station.upcoming.map(\.id), ["second", "pick", "first", "tail"])
+        station.enqueue(pick, at: .end)
+        XCTAssertEqual(station.upcoming.map(\.id), ["second", "first", "tail", "pick"])
+        station.removeUpcoming(first)
+        station.enqueue(seed, at: .next)
+        XCTAssertEqual(station.upcoming.map(\.id), ["second", "tail", "pick"])
+        XCTAssertNil(station.feedback(for: first))
+        let requests = await calls.calls
+        XCTAssertEqual(requests, 1)
+        XCTAssertEqual(station.direction, seed.title)
+        XCTAssertTrue(original === playback.player.currentItem)
+        XCTAssertEqual(session.video?.id, seed.id)
+    }
+
     func testDJQueueRemovalsExcludeLateResultsAndStoredCandidatesWithoutDislikingThem() async throws {
         let seed = djSong("seed", "Seed")
         let request = djSong("request", "Requested next")

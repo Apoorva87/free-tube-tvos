@@ -16,7 +16,7 @@ struct RoomDJView: View {
 
     @State private var query = ""
     @State private var pick: ChannelVideo?
-    @State private var removedPosition: Int?
+    @State private var queuePositionToFocus: Int?
     @State private var restoringFromContextMenu = false
     @State private var selectingMode = false
     @State private var selectingLanguage = false
@@ -300,29 +300,39 @@ struct RoomDJView: View {
         return VStack(alignment: .leading, spacing: 22) {
             RoomShelfTitle(title: video.title)
             Text(video.channelTitle).font(.headline).foregroundStyle(RoomPalette.muted)
-            if !isQueued && !station.upcoming.isEmpty {
-                Text("Current queue").font(.headline).foregroundStyle(RoomPalette.muted)
-                ForEach(station.upcoming.prefix(2)) { song in
-                    Label(song.title, systemImage: "music.note").font(.system(size: 22)).lineLimit(1)
-                }
+            if !isQueued, !station.upcoming.isEmpty {
+                Label(station.upcoming.prefix(2).map(\.title).joined(separator: " · "), systemImage: "music.note.list")
+                    .font(.system(size: 22)).lineLimit(1).foregroundStyle(RoomPalette.muted)
+                    .accessibilityLabel("Up next: " + station.upcoming.prefix(2).map(\.title).joined(separator: ", "))
             }
             Button("Play Now") {
                 pick = nil
                 station.playNow(video)
             }
             .accessibilityIdentifier("dj-play-now")
+            if station.isActive, viewing.video?.id != video.id {
+                Button("Play Next") {
+                    queueSong(video, at: .next)
+                }
+                .accessibilityIdentifier("dj-play-next")
+                Button(isQueued ? "Move to End of Queue" : "Add to End of Queue") {
+                    queueSong(video, at: .end)
+                }
+                .accessibilityIdentifier("dj-queue-end")
+            }
             if isQueued {
                 Button {
                     removeQueuedSong(video)
                 } label: { Label("Remove from Up Next", systemImage: "minus.circle") }
                 .accessibilityIdentifier("dj-remove-upcoming")
             }
-            Button("Queue after current song") {
-                pick = nil
-                if station.choices.contains(where: { $0.id == video.id }) { station.choose(video) }
-                else { station.steer(toward: video) }
+            if station.choices.contains(where: { $0.id == video.id }) {
+                Button("Steer Station with This Song") {
+                    station.choose(video)
+                    pick = nil
+                }
+                .accessibilityIdentifier("dj-steer")
             }
-            .accessibilityIdentifier("dj-steer")
             HStack(spacing: 14) { feedbackButtons(for: video) }
                 .buttonStyle(RoomToolbarStyle())
             Button("Done") { pick = nil }
@@ -330,17 +340,23 @@ struct RoomDJView: View {
         .frame(maxWidth: 920, alignment: .leading).padding(46)
     }
 
+    private func queueSong(_ video: ChannelVideo, at position: RoomDJQueuePosition) {
+        station.enqueue(video, at: position)
+        queuePositionToFocus = station.upcoming.firstIndex { $0.id == video.id }
+        pick = nil
+    }
+
     private func removeQueuedSong(_ video: ChannelVideo) {
         guard let index = station.upcoming.firstIndex(where: { $0.id == video.id }) else { return }
-        removedPosition = index
+        queuePositionToFocus = index
         restoringFromContextMenu = pick == nil
         station.removeUpcoming(video)
         if pick != nil { pick = nil }
     }
 
     private func restoreQueueFocus() {
-        guard let position = removedPosition else { return }
-        removedPosition = nil
+        guard let position = queuePositionToFocus else { return }
+        queuePositionToFocus = nil
         restoringFromContextMenu = false
         Task { @MainActor in
             await Task.yield()

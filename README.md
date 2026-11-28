@@ -28,7 +28,9 @@ Search remembers the last six searches for each profile on this TV. Select a rec
 
 Open **DJ Mode** in the sidebar. Choose a recommended song from your listening history or music interests, or use the search field to start with a genre, mood, or song. Try **songs like Gulabi Sadi**. If several recordings match, pick the one you mean. In regular Search you can also hold Select on the recording and choose **Play in DJ** to start with that exact video.
 
-The current song plays in the corner while you browse **Up next**. When a song ends, the next song plays in order. DJ appends at most two songs per refill and uses candidates already on the TV before requesting more. Select any queued tile and choose **Remove from Up Next**, or hold Select to find the same action in its menu. The song stays out of that station. Dislike it to exclude it from future recommendations for your profile.
+While a song plays, select another tile and choose **Play Next** to put it immediately after the current song, or **Add to End of Queue** to play it after everything already in **Up next**. On a queued tile, **Play Next** and **Move to End of Queue** move that one song. **Remove from Up Next** takes it out and keeps the other songs in order. You can also hold Select on a queued tile to remove it.
+
+DJ adds at most two songs per refill and uses candidates already on the TV before requesting more. Removing a song skips it for this station. Disliking it also excludes it from future recommendations for your profile.
 
 Enter **more Marathi wedding songs** to change what plays next. Choose **Play Now** on a tile for an immediate switch. Likes influence the upcoming order.
 
