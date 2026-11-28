@@ -12,6 +12,61 @@ struct ChannelVideo: Identifiable, Hashable, Codable, Sendable {
     var uploadPosition: Int? = nil
     var publicationLabel: String?
     var viewLabel: String?
+    private var estimatedPublicationDate: Date?
+
+    init(id: String, title: String, channelID: String, channelTitle: String, thumbnail: URL?,
+         publishedAt: Date = .distantPast, coverThumbnail: URL? = nil, durationSeconds: Int? = nil,
+         uploadPosition: Int? = nil, publicationLabel: String? = nil, viewLabel: String? = nil) {
+        self.id = id
+        self.title = title
+        self.channelID = channelID
+        self.channelTitle = channelTitle
+        self.thumbnail = thumbnail
+        self.publishedAt = publishedAt
+        self.coverThumbnail = coverThumbnail
+        self.durationSeconds = durationSeconds
+        self.uploadPosition = uploadPosition
+        self.publicationLabel = publicationLabel
+        self.viewLabel = viewLabel
+        // Public listings sometimes supply only “2 hours ago”. Preserve when that age was observed for saved tiles.
+        if publishedAt == .distantPast, let seconds = Self.reportedRecentAge(publicationLabel) {
+            estimatedPublicationDate = Date().addingTimeInterval(-seconds)
+        }
+    }
+
+    private static func reportedRecentAge(_ label: String?) -> TimeInterval? {
+        guard let match = label?.firstMatch(of: /(?i)\b(\d+)\s+(sec(?:ond)?|min(?:ute)?|h(?:ou)?r)s?\s+ago\b/),
+              let value = Double(match.1) else { return nil }
+        let unit = match.2.lowercased()
+        let seconds = value * (unit.hasPrefix("h") ? 3600 : unit.hasPrefix("m") ? 60 : 1)
+        return seconds < 86_400 ? seconds : nil
+    }
+
+    func publicationDate(verified: Date?) -> Date? {
+        verified ?? (publishedAt == .distantPast ? estimatedPublicationDate : publishedAt)
+    }
+
+    static func recentPublication(_ elapsed: TimeInterval) -> String? {
+        guard elapsed >= 0, elapsed < 86_400 else { return nil }
+        if elapsed < 60 { return "Just now" }
+        let hours = elapsed >= 3600
+        let count = Int(elapsed / (hours ? 3600 : 60))
+        let unit = hours ? "hr" : "min"
+        return "\(count) \(unit)\(count == 1 ? "" : "s") ago"
+    }
+
+    func tilePublication(verified: Date?, now: Date = .now) -> String? {
+        if let date = publicationDate(verified: verified) {
+            if let recent = Self.recentPublication(now.timeIntervalSince(date)) { return recent }
+            if verified != nil || uploadPosition == nil || Self.reportedRecentAge(publicationLabel) != nil {
+                return date.formatted(date: .abbreviated, time: .omitted)
+            }
+        } else if let seconds = Self.reportedRecentAge(publicationLabel) {
+            // Previously saved public tiles may lack the time their relative label was observed.
+            return Self.recentPublication(seconds)
+        }
+        return publicationLabel
+    }
 
     static func formatViews(_ count: UInt64) -> String {
         count.formatted(.number.notation(.compactName)) + (count == 1 ? " view" : " views")

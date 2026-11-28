@@ -6,6 +6,8 @@ freeTube is an independent YouTube client for Apple TV. Open **Discover** to see
 
 ## Start in Discover
 
+On video tiles, publication time appears on the left and views appear on the right. During the first 24 hours, a new upload shows its age in minutes or hours, such as **1 hr ago** or **23 hrs ago**.
+
 Discover opens on **For you**. The first three rows are **Education**, **Economics**, and **Health**, followed by **Trending Hindi songs** and **Trending English songs**. Each topic uses public video search. The music rows search for trending songs in each language and do not represent an official chart.
 
 Open **Settings → Discover rows** in the sidebar to show or hide any row, move it up or down, or add your own search topic. Turn on **Personal recommendations** for suggestions from likes and followed channels, or **From your subscriptions** for recent uploads grouped by creator. Changes are saved on this Apple TV. Explore, Music, Gaming, News, Sports, and Live remain available across the top of Discover.
@@ -26,7 +28,9 @@ Search remembers the last six searches for each profile on this TV. Select a rec
 
 Open **DJ Mode** in the sidebar. Choose a recommended song from your listening history or music interests, or use the search field to start with a genre, mood, or song. Try **songs like Gulabi Sadi**. If several recordings match, pick the one you mean. In regular Search you can also hold Select on the recording and choose **Play in DJ** to start with that exact video.
 
-The current song plays in the corner while you browse **Up next**. Enter **more Marathi wedding songs** to change what plays next. Choose **Play Now** on a tile when you want an immediate switch. The station fetches more tracks as the queue runs low. Likes influence the upcoming order, and disliked tracks are excluded from future recommendations for that profile.
+The current song plays in the corner while you browse **Up next**. When a song ends, the next song plays in order. DJ appends at most two songs per refill and uses candidates already on the TV before requesting more. Select any queued tile and choose **Remove from Up Next**, or hold Select to find the same action in its menu. The song stays out of that station. Dislike it to exclude it from future recommendations for your profile.
+
+Enter **more Marathi wedding songs** to change what plays next. Choose **Play Now** on a tile for an immediate switch. Likes influence the upcoming order.
 
 **Flow** uses available mood and published tempo metadata. **Popular Shuffle** draws from highly viewed matches. A word-based station starts with English and Hindi by default. A station based on a specific recording uses the language the catalog can identify. Use the globe control to choose a language yourself.
 
@@ -60,6 +64,7 @@ The TV stores manually entered client settings and the Google refresh token in i
 | Move down the sidebar | From the profile icon, press **Down** for Discover, then Home, Subscriptions, Playlists, History, DJ Mode, Search, Ask AI, and Settings. |
 | Return to your channels | Press **Back** while browsing and select **Subscriptions**. Focus a channel to filter its uploads. Press **Right** to return to the videos. |
 | Adjust playback speed | Press **Up** during playback and choose the speedometer. Available rates are 0.5×, 1×, 1.25×, 1.5× and 2×. |
+| Preview a seek | In full screen, swipe across the clickpad or hold its left or right edge. A small picture above the timeline shows the scene near the selected time. Release to seek there. If the video was playing, it keeps playing while you browse. If it was paused, it stays paused. |
 | Visit the creator | Choose **View creator** in the player controls. Play another upload, follow the channel on this TV, or select **Subscribe on YouTube** and scan the code to subscribe on your phone. When you close the code, freeTube refreshes the subscriptions for its signed-in profile. |
 | Read the description | Choose **Description** in the player controls. Use the remote to scroll the creator’s text. **Back** returns to the video. |
 | Find a similar song or video | Choose the right-hand **Show more options** control, or swipe up on the Siri Remote while the controls are hidden. Browse left or right in the compact thumbnail row across the bottom of the video. Select a thumbnail to play it, or hold Select and choose **Add to playlist** to save it. Suggestions come from the current video’s YouTube recommendations. |
@@ -86,6 +91,7 @@ Open **Ask AI** from the sidebar or the Search screen. Select **Connect or check
 - **Recommendations.** The TV interleaves results from several source videos so one popular upload does not fill a whole row. If a source returns too few videos, Discover can draw on followed-channel topics. Recommendations are cached per profile on the TV.
 - **Player.** The app resolves an available public stream and plays it with AVKit. This direct playback path does not request a separate YouTube ad player. Stream availability varies, and ads embedded in the video are part of the picture. When playback is unavailable, **Open in YouTube** hands the video to the official app, where YouTube’s own ad settings apply.
 - **Browsing during playback.** A shared playback session keeps the same AVPlayer item alive while the surface moves between full screen and the corner. The mini-player works inside freeTube.
+- **Seek previews.** When the video supplies a storyboard, the TV loads a sheet of thumbnails on demand. Each thumbnail represents a short interval. The timestamp is the exact seek destination. For supported video files, the TV can generate a frame directly. When preview images are unavailable, you can still seek on the native timeline.
 
 ## Source and tests
 

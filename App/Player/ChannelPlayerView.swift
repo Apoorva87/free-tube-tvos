@@ -155,9 +155,20 @@ private struct NativePlayer: UIViewControllerRepresentable {
         var configuredSpeed: Float?
         var showingSheet = false
         let shade = PlaybackOverlay()
+        let scanGestures: RoomScanGestures
         weak var similarOverlay: UIViewController?
 
-        init(session: RoomViewingSession) { self.session = session }
+        init(session: RoomViewingSession) {
+            self.session = session
+            scanGestures = RoomScanGestures(scanner: session.playback.scanner) { [weak session] in
+                session?.presentation == .full && session?.playback.canScanVideo == true
+            }
+        }
+
+        nonisolated func playerViewController(_ controller: AVPlayerViewController, willTransitionToVisibilityOfTransportBar visible: Bool,
+                                              with coordinator: any AVPlayerViewControllerAnimationCoordinator) {
+            Task { @MainActor [weak self] in self?.scanGestures.transportBarVisible = visible }
+        }
 
         nonisolated func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {
             // AVKit has finished handling its own menus. SwiftUI owns the embedded player's presentation.
@@ -179,6 +190,7 @@ private struct NativePlayer: UIViewControllerRepresentable {
         // The browsing window hosts this same controller and routes remote presses to the catalog.
         controller.allowsPictureInPicturePlayback = false
         controller.speeds = []
+        if !miniature { context.coordinator.scanGestures.install(on: controller) }
         if let overlay = controller.contentOverlayView {
             let shade = context.coordinator.shade
             shade.togglePresentation = miniature ? session.expand : session.minimize
@@ -199,6 +211,7 @@ private struct NativePlayer: UIViewControllerRepresentable {
         let coordinator = context.coordinator
         coordinator.shade.alpha = session.playback.fadeFraction
         coordinator.showingSheet = showingSheet
+        coordinator.scanGestures.enabled = !miniature && !showingSheet && session.presentation == .full
         if !miniature, let video = session.video, coordinator.videoID != video.id {
             let panel = RoomPlayerPanelView(panel: .similar, video: video, session: session, onClose: { [weak coordinator] in
                 coordinator?.similarOverlay?.dismiss(animated: true)
@@ -234,6 +247,10 @@ private struct NativePlayer: UIViewControllerRepresentable {
             })
         }
         controller.transportBarCustomMenuItems = controls
+    }
+
+    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
+        coordinator.scanGestures.cancel()
     }
 }
 
@@ -276,6 +293,9 @@ private final class PlaybackOverlay: UIView, UIGestureRecognizerDelegate {
 final class ChannelPlayback {
     enum Phase: Equatable { case loading, playing, finished, failed(String) }
     var phase = Phase.loading
+    @ObservationIgnored let scrubFrames = RoomScrubFrames()
+    @ObservationIgnored lazy var scanner = RoomVideoScanner(canPreview: scrubFrames.canPreview, image: scrubFrames.image)
+    var canScanVideo: Bool { phase == .playing && audioFadeFraction == 0 }
     private(set) var rateLimited = false
     @ObservationIgnored var onRateLimited: ((Date) -> Void)?
     @ObservationIgnored var djRequestsHeld: (() -> Bool)?
@@ -409,14 +429,16 @@ final class ChannelPlayback {
 
     private func resolveItem(_ video: ChannelVideo) async throws -> AVPlayerItem {
         if let itemResolver { return try await itemResolver(video) }
-        let stream = try await resolver.stream(videoID: video.id, channelID: video.channelID)
+        let media = try await resolver.media(videoID: video.id, channelID: video.channelID)
         try Task.checkCancellation()
-        let item = try await Self.item(for: stream)
+        let item = try await Self.item(for: media.stream)
+        scrubFrames.register(item, storyboardSpec: media.storyboardSpec)
         item.externalMetadata = [Self.metadata(.commonIdentifierTitle, video.title), Self.metadata(.commonIdentifierArtist, video.channelTitle)]
         return item
     }
 
     func play(_ video: ChannelVideo, usePrepared: Bool = false, onStart: () -> Void = {}) async {
+        scanner.stop()
         if usePrepared, preparedID == video.id, preparedItem == nil {
             await preparing?.value
             guard !Task.isCancelled else { return }
@@ -491,6 +513,7 @@ final class ChannelPlayback {
                     phase = .failed("freeTube couldn’t play the stream YouTube supplied for this video.")
                     return
                 case .ended:
+                    scanner.stop()
                     recordPlaybackStart(onStart)
                     phase = .finished
                     return
@@ -505,6 +528,7 @@ final class ChannelPlayback {
     }
 
     func stop() {
+        scanner.stop()
         rateLimited = false
         activeID = UUID()
         clearObservers()
@@ -589,6 +613,7 @@ final class ChannelPlayback {
         let shade = picture ?? fraction
         guard fraction != audioFadeFraction || shade != fadeFraction else { return }
         audioFadeFraction = fraction
+        if fraction > 0, scanner.busy { scanner.stop() }
         if fraction > 0, originalVolume == nil { originalVolume = player.volume }
         fadeFraction = shade
         if let originalVolume { player.volume = originalVolume * Float(1 - fraction) }

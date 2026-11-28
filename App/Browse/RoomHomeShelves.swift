@@ -120,16 +120,15 @@ struct RoomVideoShelf: View {
                 ForEach(videos) { video in
                     RoomVideoTile(video: video, focus: focus, discoveryShelfID: discoveryShelfID, portrait: portrait) { action(video) }
                         .containerRelativeFrame(.horizontal, count: typeSize.isAccessibilitySize ? min(3, columns) : columns, span: 1, spacing: 22)
+                        .onMoveCommand(perform: video.id == videos.first?.id ? { direction in
+                            if direction == .left { openMenu() }
+                        } : nil)
                 }
             }
             .padding(.vertical, 8)
         }
         .scrollIndicators(.hidden)
         .focusSection()
-        .onMoveCommand { direction in
-            if direction == .left, let first = videos.first,
-               focus.wrappedValue == .video(first.id, in: discoveryShelfID) { openMenu() }
-        }
     }
 }
 
@@ -248,8 +247,9 @@ private struct RoomVideoMetadata: View {
     @Environment(\.roomVideoFacts) private var facts
     var body: some View {
         let views = facts[video.id]?.views.map { $0.formatted(.number.notation(.compactName)) + " views" }
-        let age: String? = video.publishedAt == .distantPast ? nil :
-            video.publishedAt.formatted(.relative(presentation: .numeric, unitsStyle: .wide))
+        let age = video.publicationDate(verified: facts[video.id]?.publishedAt).map {
+            ChannelVideo.recentPublication(Date().timeIntervalSince($0)) ?? $0.formatted(.relative(presentation: .numeric, unitsStyle: .wide))
+        } ?? video.publicationLabel
         Text([views, age].compactMap { $0 }.joined(separator: " • ")).lineLimit(1)
     }
 }
@@ -268,16 +268,20 @@ struct RoomTileByline: View {
 
     var body: some View {
         let facts = library.videoFacts[video.id]
-        let publication = facts?.publishedAt?.formatted(date: .abbreviated, time: .omitted)
-            ?? video.publicationLabel
-            ?? (video.uploadPosition == nil && video.publishedAt != .distantPast
-                ? video.publishedAt.formatted(date: .abbreviated, time: .omitted) : nil)
+        let publication = video.tilePublication(verified: facts?.publishedAt)
         let views = facts?.views.map(ChannelVideo.formatViews) ?? video.viewLabel
         VStack(alignment: .leading, spacing: 1) {
             Text(video.channelTitle).font(typeSize.isAccessibilitySize ? .caption : .system(size: compact ? 17 : 18))
             if publication != nil || views != nil {
                 HStack(spacing: 4) {
-                    if let publication { Text(publication) }
+                    if let publication {
+                        if let date = video.publicationDate(verified: facts?.publishedAt),
+                           ChannelVideo.recentPublication(Date().timeIntervalSince(date)) != nil {
+                            TimelineView(.periodic(from: date, by: 60)) { tick in
+                                Text(video.tilePublication(verified: facts?.publishedAt, now: tick.date) ?? publication)
+                            }
+                        } else { Text(publication) }
+                    }
                     Spacer(minLength: 4)
                     if let views { Text(views) }
                 }
@@ -325,12 +329,16 @@ private struct VideoPlaylistMenu: ViewModifier {
     @Environment(ChannelAccount.self) private var account
     @Environment(\.visitSearchCreator) private var visitSearchCreator
     @Environment(\.playSearchResultInDJ) private var playInDJ
+    @Environment(\.removeFromDJQueue) private var removeFromDJQueue
     @State private var adding = false
     @State private var creator: RoomChannel?
 
     func body(content: Content) -> some View {
         content
             .contextMenu {
+                if let removeFromDJQueue {
+                    Button { removeFromDJQueue(video) } label: { Label("Remove from Up Next", systemImage: "minus.circle") }
+                }
                 Button {
                     viewing.addToQuickPlaylist(video, seconds: seconds, store: playlists)
                 } label: { Label("Add to Quick Playlist", systemImage: "text.line.first.and.arrowtriangle.forward") }

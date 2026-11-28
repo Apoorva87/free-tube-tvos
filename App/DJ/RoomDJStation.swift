@@ -50,6 +50,13 @@ final class RoomDJStation {
     private var accountSession: UUID?
     private var votes: [Vote] = []
     private var dislikedIDs = Set<String>()
+    private var removedIDs = Set<String>()
+    private var candidates: [ChannelVideo] = []
+    private static let lowWaterMark = 1
+    private static let refillSize = 2
+    private static let candidateLimit = 24
+    // A track can generate several transport callbacks, including one at its natural end.
+    private var lastRefillTrackID: String?
     private static let voteKey = "room.dj.feedback.v1"
 
     private(set) var isActive = false
@@ -59,6 +66,8 @@ final class RoomDJStation {
     private(set) var language: String?
     private var searchIssue: String?
     private var stationIssue: String?
+    private var refillFailure: String?
+    var canRetryRefill: Bool { refillFailure != nil }
     @ObservationIgnored private let providerDeadline: () -> Date?
     private(set) var retryAfter: Date?
     private var retryPrompt: String?
@@ -66,7 +75,7 @@ final class RoomDJStation {
     var songAwaitingRetry: ChannelVideo? { deferredChoice?.video }
     var message: String? {
         if let retryAfter { return CatalogError.rateLimited(until: retryAfter).localizedDescription }
-        return searchIssue ?? stationIssue
+        return searchIssue ?? refillFailure ?? stationIssue
     }
     private(set) var isSearching = false
     private var isFetching = false
@@ -107,12 +116,15 @@ final class RoomDJStation {
     }
 
     func retry() {
+        let resumingAfterCooldown = retryAfter != nil
         guard requestsAllowed(userInitiated: true) else { return }
         if let prompt = retryPrompt {
             submit(prompt)
         } else if let choice = deferredChoice {
             use(choice.video, prompt: choice.prompt, typed: choice.typed, immediately: true)
-        } else if let session, isActive {
+        } else if let session, isActive, resumingAfterCooldown || canRetryRefill {
+            refillFailure = nil
+            lastRefillTrackID = nil
             if case .failed = session.playback.phase { session.load() }
             else {
                 session.resumeDJQueue()
@@ -226,6 +238,8 @@ final class RoomDJStation {
         clearSearch()
         cancelBatch()
         stationIssue = nil
+        candidates.removeAll()
+        lastRefillTrackID = nil
         direction = prompt
         topic = typed ? RoomDJCatalog.topic(for: prompt) : nil
         promptLanguage = typed ? RoomDJCatalog.language(in: prompt) : nil
@@ -263,6 +277,8 @@ final class RoomDJStation {
     private func rebuild() {
         guard isActive else { return }
         cancelBatch()
+        candidates.removeAll()
+        lastRefillTrackID = nil
         session?.replaceDJUpcoming(requestedNext.map { [$0] } ?? [])
         fillIfLow()
     }
@@ -272,6 +288,8 @@ final class RoomDJStation {
     }
 
     private func cancelBatch() {
+        if isFetching || canRetryRefill { lastRefillTrackID = nil }
+        refillFailure = nil
         batchID = UUID()
         batchTask?.cancel()
         batchTask = nil
@@ -282,14 +300,44 @@ final class RoomDJStation {
         if isFetching { cancelBatch() }
     }
 
+    func removeUpcoming(_ video: ChannelVideo) {
+        guard isActive, let session, session.upcoming.contains(where: { $0.id == video.id }) else { return }
+        removedIDs.insert(video.id)
+        candidates.removeAll { $0.id == video.id }
+        if requestedNext?.id == video.id { requestedNext = nil }
+        session.removeDJUpcoming(id: video.id)
+        if session.upcoming.isEmpty { lastRefillTrackID = nil }
+    }
+
+    private func exclusions(in session: RoomViewingSession) -> Set<String> {
+        session.attemptedIDs.union(session.upcoming.map(\.id)).union(dislikedIDs).union(removedIDs)
+    }
+
+    private func appendCandidates(to session: RoomViewingSession) {
+        guard session.canFillDJQueue, session.upcoming.count <= Self.lowWaterMark, !candidates.isEmpty else { return }
+        let next = Array(candidates.prefix(Self.refillSize))
+        candidates.removeFirst(next.count)
+        lastRefillTrackID = session.video?.id
+        stationIssue = nil
+        session.appendDJUpcoming(next)
+    }
+
     func fillIfLow() {
-        guard isActive, !isFetching, !isSearching, upcoming.count <= 3, let seed, let session,
-              session.canFillDJQueue, requestsAllowed() else { return }
+        guard isActive, !isFetching, !isSearching, let seed, let session, session.canFillDJQueue,
+              upcoming.count <= Self.lowWaterMark, let current = session.video, current.id != lastRefillTrackID,
+              requestsAllowed() else { return }
+        let excluded = exclusions(in: session)
+        candidates.removeAll { excluded.contains($0.id) }
+        if !candidates.isEmpty {
+            appendCandidates(to: session)
+            return
+        }
+        lastRefillTrackID = current.id
         let generation = batchID
         let disliked = dislikedSongs
-        let excluded = session.attemptedIDs.union(upcoming.map(\.id)).union(dislikedIDs)
         let liked = likedSongs
         let language = promptLanguage ?? language, mode = mode, topic = topic
+        refillFailure = nil
         isFetching = true
         batchTask = Task {
             do {
@@ -298,21 +346,26 @@ final class RoomDJStation {
                 guard generation == batchID, !Task.isCancelled, requestsAllowed() else { return }
                 isFetching = false
                 seedLanguage = source.detectedLanguage(for: seed)
-                let remaining = upcoming
-                // A song may have advanced or been queued while the catalog was loading.
-                var seen = excluded.union(session.attemptedIDs).union(remaining.map(\.id))
-                let fresh = tracks.filter { seen.insert($0.id).inserted }
-                if fresh.isEmpty {
-                    if remaining.isEmpty { stationIssue = "No more matching songs found. Try another direction." }
+                // Edits, quick picks and handoffs can all happen during a lookup.
+                var seen = excluded.union(exclusions(in: session))
+                for track in tracks where seen.insert(track.id).inserted {
+                    candidates.append(track)
+                    if candidates.count == Self.candidateLimit { break }
+                }
+                if candidates.isEmpty {
+                    lastRefillTrackID = session.video?.id
+                    if upcoming.isEmpty { stationIssue = "No more matching songs found. Try another direction." }
                 } else {
-                    stationIssue = nil
-                    session.replaceDJUpcoming(remaining + fresh.prefix(12 - min(12, remaining.count)))
+                    // Keep a completed batch available if a quick pick or handoff deferred its first append.
+                    lastRefillTrackID = nil
+                    appendCandidates(to: session)
                 }
             } catch {
                 guard generation == batchID, !Task.isCancelled else { return }
                 if case CatalogError.rateLimited(let until) = error { hold(until: until); return }
                 isFetching = false
-                stationIssue = "Couldn’t load more DJ songs. " + error.localizedDescription
+                lastRefillTrackID = session.video?.id
+                refillFailure = "Couldn’t load more DJ songs. " + error.localizedDescription
             }
         }
     }
@@ -320,6 +373,9 @@ final class RoomDJStation {
     func end() {
         clearSearch()
         cancelBatch()
+        removedIDs.removeAll()
+        candidates.removeAll()
+        lastRefillTrackID = nil
         isActive = false
         seed = nil
         seedLanguage = nil
@@ -418,12 +474,15 @@ final class RoomDJStation {
         guard let seed, let session else { return }
         cancelBatch()
         let disliked = dislikedSongs
-        let excluded = session.attemptedIDs.union(dislikedIDs)
+        let excluded = session.attemptedIDs.union(dislikedIDs).union(removedIDs)
         if let requestedNext, excluded.contains(requestedNext.id) { self.requestedNext = nil }
         let preferred = requestedNext.map { [$0] } ?? []
         let rest = upcoming.filter { $0.id != requestedNext?.id && !excluded.contains($0.id) }
         let ranked = source.rank(rest, seed: seed, language: promptLanguage ?? language, mode: mode, excluding: excluded,
                                  liked: likedSongs, disliked: disliked, topic: topic)
+        candidates = source.rank(candidates, seed: seed, language: promptLanguage ?? language, mode: mode,
+                                 excluding: excluded.union(upcoming.map(\.id)), liked: likedSongs, disliked: disliked, topic: topic)
+        lastRefillTrackID = nil
         session.replaceDJUpcoming(preferred + ranked)
         fillIfLow()
     }

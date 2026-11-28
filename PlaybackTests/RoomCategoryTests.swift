@@ -3,6 +3,22 @@ import os
 @testable import freeTube
 
 final class RoomCategoryTests: XCTestCase {
+    func testTilePublicationShowsElapsedHoursAcrossMidnightAndKeepsOlderDates() {
+        let now = Date(timeIntervalSince1970: 1_800_061_200)
+        var video = ChannelVideo(id: "age", title: "", channelID: "", channelTitle: "", thumbnail: nil)
+        for (seconds, label) in [(0, "Just now"), (60, "1 min ago"), (3599, "59 mins ago"),
+                                 (3600, "1 hr ago"), (7199, "1 hr ago"), (7200, "2 hrs ago"), (86_399, "23 hrs ago")] {
+            let published = now.addingTimeInterval(-Double(seconds))
+            XCTAssertEqual(video.tilePublication(verified: published, now: now), label)
+        }
+        video.publishedAt = now.addingTimeInterval(-86_400)
+        XCTAssertEqual(video.tilePublication(verified: nil, now: now), video.publishedAt.formatted(date: .abbreviated, time: .omitted))
+        let reported = ChannelVideo(id: "reported", title: "", channelID: "", channelTitle: "", thumbnail: nil, publicationLabel: "Streamed 2 hours ago")
+        XCTAssertEqual(reported.tilePublication(verified: nil), "2 hrs ago")
+        XCTAssertEqual(reported.tilePublication(verified: nil, now: Date().addingTimeInterval(3600)), "3 hrs ago")
+        XCTAssertNil(ChannelVideo(id: "missing", title: "", channelID: "", channelTitle: "", thumbnail: nil).tilePublication(verified: nil, now: now))
+    }
+
     private let owner = "UC0000000000000000000000"
     private typealias Object = [String: Any]
 

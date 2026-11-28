@@ -36,6 +36,7 @@ private func result(_ streams: String, channel: String = channelID, status: Stri
 }
 
 private class PublicPlayerFixture: URLProtocol, @unchecked Sendable {
+    class var watchExtras: String { "" }
     class var nativeResponse: String {
         #"{"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"selected-id","channelId":"selected-channel"},"streamingData":{"hlsManifestUrl":"\#(hls)"}}"#
     }
@@ -47,7 +48,7 @@ private class PublicPlayerFixture: URLProtocol, @unchecked Sendable {
         let url = request.url!
         let body: String
         if url.path == "/watch" {
-            body = #"<script>ytcfg.set({"VISITOR_DATA":"issued-visitor"});var ytInitialPlayerResponse = {"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"selected-id","channelId":"selected-channel"},"streamingData":{"serverAbrStreamingUrl":"https://example.googlevideo.com/abr"}};</script>"#
+            body = #"<script>ytcfg.set({"VISITOR_DATA":"issued-visitor"});var ytInitialPlayerResponse = {"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"selected-id","channelId":"selected-channel"},"streamingData":{"serverAbrStreamingUrl":"https://example.googlevideo.com/abr"}\#(Self.watchExtras)};</script>"#
         } else {
             guard url.host == "www.youtube.com", url.path == "/youtubei/v1/player",
                   request.httpMethod == "POST",
@@ -103,5 +104,31 @@ private final class LimitedPlayerFixture: PublicPlayerFixture, @unchecked Sendab
 @Test func preservesProviderRetryAfterForPlaybackCooldown() async {
     await #expect(throws: PublicPlayerError.rateLimited(retryAfter: "120")) {
         try await resolve(using: LimitedPlayerFixture.self)
+    }
+}
+
+private final class WatchStoryboardFixture: PublicPlayerFixture, @unchecked Sendable {
+    override class var watchExtras: String {
+        #","storyboards":{"playerStoryboardSpecRenderer":{"spec":"watch-board"}}"#
+    }
+}
+
+private final class NativeStoryboardFixture: PublicPlayerFixture, @unchecked Sendable {
+    override class var nativeResponse: String {
+        String(super.nativeResponse.dropLast()) + #","storyboards":{"playerStoryboardSpecRenderer":{"spec":"native-board"}}}"#
+    }
+    override class var watchExtras: String { #","storyboards":{"playerStoryboardSpecRenderer":12}"# }
+}
+
+@Test func carriesArtworkFromAnAlreadyValidatedResponseWithoutChangingSelectedPlayback() async throws {
+    for (fixture, expected) in [(WatchStoryboardFixture.self as PublicPlayerFixture.Type, "watch-board"),
+                                (NativeStoryboardFixture.self as PublicPlayerFixture.Type, "native-board")] {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [fixture]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let media = try await PublicVideoPlayer(session: session).media(videoID: videoID, channelID: channelID)
+        #expect(media.storyboardSpec == expected)
+        #expect(media.stream == .single(URL(string: hls)!))
     }
 }

@@ -7,6 +7,11 @@ public enum PublicVideoStream: Equatable, Sendable {
     case separate(video: URL, audio: URL)
 }
 
+public struct PublicPlaybackMedia: Sendable {
+    public let stream: PublicVideoStream
+    public let storyboardSpec: String?
+}
+
 public enum PublicPlayerError: LocalizedError, Equatable {
     case restricted(String)
     case unavailable
@@ -46,6 +51,10 @@ public struct PublicVideoPlayer: Sendable {
     }
 
     public func stream(videoID: String, channelID: String) async throws -> PublicVideoStream {
+        try await media(videoID: videoID, channelID: channelID).stream
+    }
+
+    public func media(videoID: String, channelID: String) async throws -> PublicPlaybackMedia {
         var page = URLComponents()
         page.scheme = "https"
         page.host = "www.youtube.com"
@@ -57,7 +66,8 @@ public struct PublicVideoPlayer: Sendable {
         let html = String(decoding: try await data(for: pageRequest), as: UTF8.self)
         let watch = try Self.readPlayer(in: html)
         try watch.validate(videoID: videoID, channelID: channelID)
-        if let hls = watch.hls { return .single(hls) }
+        let watchBoard = watch.storyboards?.spec
+        if let hls = watch.hls { return PublicPlaybackMedia(stream: .single(hls), storyboardSpec: watchBoard) }
 
         // The watch page and the native playlist request belong to the same anonymous visit.
         let visitor = watch.responseContext?.visitorData ?? Self.pageVisitor(in: html)
@@ -67,15 +77,16 @@ public struct PublicVideoPlayer: Sendable {
             reply = try await data(for: request)
         } catch let error as URLError where error.code != .cancelled {
             try Task.checkCancellation()
-            if let stream = try? watch.stream() { return stream }
+            if let stream = try? watch.stream() { return PublicPlaybackMedia(stream: stream, storyboardSpec: watchBoard) }
             throw error
         } catch PublicPlayerError.badResponse(let code) where (500...599).contains(code) {
-            return try watch.stream()
+            return try PublicPlaybackMedia(stream: watch.stream(), storyboardSpec: watchBoard)
         }
         let native = try JSONDecoder().decode(PlayerResponse.self, from: reply)
         try native.validate(videoID: videoID, channelID: channelID)
-        if let stream = try? native.stream() { return stream }
-        return try watch.stream()
+        let storyboard = watchBoard ?? native.storyboards?.spec
+        if let stream = try? native.stream() { return PublicPlaybackMedia(stream: stream, storyboardSpec: storyboard) }
+        return try PublicPlaybackMedia(stream: watch.stream(), storyboardSpec: storyboard)
     }
 
     private func data(for request: URLRequest) async throws -> Data {
@@ -151,6 +162,15 @@ public struct PublicVideoPlayer: Sendable {
 }
 
 private struct PlayerResponse: Decodable {
+    struct Storyboards: Decodable {
+        let spec: String?
+        private enum Key: String, CodingKey { case playerStoryboardSpecRenderer, spec }
+        init(from decoder: Decoder) {
+            let renderer = try? decoder.container(keyedBy: Key.self).nestedContainer(keyedBy: Key.self, forKey: .playerStoryboardSpecRenderer)
+            let value = try? renderer?.decode(String.self, forKey: .spec)
+            spec = value.flatMap { !$0.isEmpty && $0.utf8.count <= 65_536 ? $0 : nil }
+        }
+    }
     struct Playability: Decodable { let status: String; let reason: String? }
     struct VideoDetails: Decodable { let videoId: String; let channelId: String }
     struct Streams: Decodable {
@@ -170,6 +190,7 @@ private struct PlayerResponse: Decodable {
     let playabilityStatus: Playability
     let videoDetails: VideoDetails?
     let streamingData: Streams?
+    let storyboards: Storyboards?
 
     var hls: URL? { Self.mediaURL(streamingData?.hlsManifestUrl) }
 

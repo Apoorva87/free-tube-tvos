@@ -340,6 +340,7 @@ extension ChannelPlaybackTests {
         station.playNow(seed)
         station.steer(toward: next)
         try await djWait("catalog cooldown during playback") { station.retryAfter != nil }
+        XCTAssertFalse(station.canRetryRefill)
         XCTAssertEqual(session.next?.id, next.id)
         let item = try XCTUnwrap(playback.player.currentItem)
         item.forwardPlaybackEndTime = playback.player.currentTime() + CMTime(seconds: 0.2, preferredTimescale: 600)
@@ -399,8 +400,9 @@ extension ChannelPlaybackTests {
     func testDJThrottledPrefetchCannotStartASecondResolverAtHandoff() async throws {
         let seed = djSong("seed", "Seed song")
         let next = djSong("next", "Next song")
+        let tail = djSong("tail", "Editable tail")
         let gate = DJRequestGate()
-        let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { _, _ in [next] })
+        let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { _, _ in [next, tail] })
         let url = try djAudioFile()
         defer { try? FileManager.default.removeItem(at: url) }
         var nextAttempts = 0
@@ -420,6 +422,9 @@ extension ChannelPlaybackTests {
         let item = try XCTUnwrap(playback.player.currentItem)
         item.forwardPlaybackEndTime = playback.player.currentTime() + CMTime(seconds: 0.2, preferredTimescale: 600)
         try await djWait("the session to wait for the prepared song") { session.video?.id == next.id }
+        station.removeUpcoming(next) // The old row has already become current.
+        station.removeUpcoming(tail)
+        XCTAssertTrue(station.upcoming.isEmpty)
         await gate.release()
         try await djWait("the throttled handoff to stop") {
             if case .failed = playback.phase { return station.retryAfter != nil }
@@ -546,8 +551,8 @@ extension ChannelPlaybackTests {
         playback.player.isMuted = true
 
         station.submit("songs like Gulabi Sadi")
-        try await djWait("the exact song, four queued picks and audio playback") {
-            session.video?.id == seed.id && station.upcoming.count == 4 && playback.player.currentTime().seconds > 0.1
+        try await djWait("the exact song, its first two picks and audio playback") {
+            session.video?.id == seed.id && station.upcoming.count == 2 && playback.player.currentTime().seconds > 0.1
         }
         XCTAssertEqual(session.presentation, .mini)
         XCTAssertEqual(station.effectiveLanguage, "Marathi")
@@ -555,7 +560,7 @@ extension ChannelPlaybackTests {
         // Let AVFoundation signal a natural end and verify that crossing the low-water mark refills the queue.
         firstItem.forwardPlaybackEndTime = playback.player.currentTime() + CMTime(seconds: 0.5, preferredTimescale: 600)
         try await djWait("the next song and a replenished queue") {
-            session.video?.id == firstPool[0].id && station.upcoming.contains(where: { $0.id == firstPool[7].id })
+            session.video?.id == firstPool[0].id && station.upcoming.map(\.id) == ["song-2", "song-3", "song-4"]
                 && playback.player.currentTime().seconds > 0.15
         }
         let player = playback.player
@@ -698,7 +703,9 @@ extension ChannelPlaybackTests {
         XCTAssertNil(station.language)
 
         station.submit("upbeat pop")
-        try await djWait("a broad English and Hindi direction") { station.direction == "upbeat pop" && !station.isLoading }
+        try await djWait("the broad direction to refill after playback starts") {
+            station.direction == "upbeat pop" && station.upcoming.count >= 2 && !station.isLoading
+        }
         XCTAssertNil(station.effectiveLanguage)
         XCTAssertFalse(station.upcoming.contains { $0.id == marathi.id })
         XCTAssertTrue(station.upcoming.contains { $0.id == hindi.id })
@@ -706,5 +713,235 @@ extension ChannelPlaybackTests {
         station.setLanguage("English")
         station.playNow(seed)
         XCTAssertEqual(station.effectiveLanguage, "English")
+    }
+}
+
+extension ChannelPlaybackTests {
+    func testDJAutomaticTransitionsPreserveQueueOrderAndReuseOneCatalogBatch() async throws {
+        let seed = djSong("seed", "Seed")
+        let songs = (1...6).map { djSong("song-\($0)", "Song \($0)") }
+        let calls = DJRequestGate()
+        let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { _, _ in
+            _ = await calls.count()
+            return songs
+        })
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let playback = ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: url) })
+        let station = RoomDJStation(source: catalog)
+        let session = RoomViewingSession(playback: playback, djStation: station)
+        defer { session.close() }
+        station.playNow(seed)
+        try await djWait("the first catalog batch") { !station.upcoming.isEmpty }
+        XCTAssertEqual(station.upcoming.map(\.id), ["song-1", "song-2"])
+        let tails = [["song-2", "song-3", "song-4"], ["song-3", "song-4"], ["song-4", "song-5", "song-6"]]
+        for (i, queue) in tails.enumerated() {
+            let item = try XCTUnwrap(playback.player.currentItem)
+            item.forwardPlaybackEndTime = playback.player.currentTime() + CMTime(seconds: 0.3, preferredTimescale: 600)
+            try await djWait("the next recording to start and request its top-up") {
+                session.video?.id == songs[i].id && session.canFillDJQueue && !station.isLoading
+            }
+            for _ in 0..<8 { station.fillIfLow() }
+            XCTAssertEqual(station.upcoming.map(\.id), queue)
+        }
+        let requestCount = await calls.calls
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    func testNaturalHandoffDismissesPreviewAndReleaseCannotSeekTheNextSong() async throws {
+        let file = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: file) }
+        let image = try XCTUnwrap(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8,
+                                            bytesPerRow: 32, space: CGColorSpaceCreateDeviceRGB(),
+                                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage())
+        let playback = ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: file) })
+        playback.scanner = RoomVideoScanner(canPreview: { _ in true }, image: { _, _ in image })
+        let first = djSong("preview-first", "First")
+        let second = djSong("preview-next", "Second")
+        let session = RoomViewingSession(playback: playback)
+        defer { session.close() }
+        session.openPlaylist(first, in: [first, second])
+        try await djWait("the current song and its prepared successor") {
+            playback.player.currentTime().seconds > 0.05 && playback.incomingPlayer?.currentItem?.status == .readyToPlay
+        }
+        let original = try XCTUnwrap(playback.player.currentItem)
+        var insetVisible = false
+        XCTAssertTrue(playback.scanner.begin(on: playback.player) { insetVisible = $0 != nil })
+        playback.scanner.move(by: 4)
+        try await djWait("the inset to display a future frame") { insetVisible }
+        original.forwardPlaybackEndTime = playback.player.currentTime() + CMTime(seconds: 0.4, preferredTimescale: 600)
+        try await djWait("the next song to start naturally") { session.video?.id == second.id && playback.player.currentItem !== original }
+        XCTAssertFalse(insetVisible)
+        XCTAssertFalse(playback.scanner.busy)
+        playback.scanner.finish()
+        XCTAssertLessThan(playback.player.currentTime().seconds, 2)
+    }
+
+    func testDJStoredRadioResultsAvoidAdditionalProviderPagesAcrossNineHandoffs() async throws {
+        let seed = djSong("radiostart1", "Seed | Marathi Song")
+        let songs = (1...12).map {
+            djSong(String(format: "radio%06d", $0), "Recording \($0) | Marathi Song", artist: "Singer \($0)")
+        }
+        let pages = DJRequestGate()
+        let catalog = RoomDJCatalog(search: { _ in _ = await pages.count(); return [] }, mix: { _ in
+            _ = await pages.count()
+            return songs
+        }, metadata: { _ in XCTFail("These recordings already have language and music evidence"); return nil })
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let playback = ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: url) })
+        let station = RoomDJStation(source: catalog)
+        let session = RoomViewingSession(playback: playback, djStation: station)
+        defer { session.close() }
+        station.playNow(seed)
+        try await djWait("the first radio page") { !station.upcoming.isEmpty }
+        var played = Set<String>()
+        for _ in 0..<9 {
+            let nextID = try XCTUnwrap(session.next?.id)
+            XCTAssertTrue(played.insert(nextID).inserted)
+            session.advance()
+            try await djWait("the next radio recording") {
+                session.video?.id == nextID && session.canFillDJQueue && !station.isLoading
+            }
+        }
+        XCTAssertEqual(played.count, 9)
+        XCTAssertEqual(station.upcoming.count, 3)
+        let pageRequests = await pages.calls
+        XCTAssertEqual(pageRequests, 1)
+    }
+
+    func testDJEmptyAndFailedRefillsStayIdleAndOnlyTheFailureOffersOneManualRetry() async throws {
+        let seed = djSong("seed", "Seed")
+        let songs = (1...4).map { djSong("pick-\($0)", "Recovered song \($0)") }
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        for fails in [false, true] {
+            let calls = DJRequestGate()
+            let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { _, _ in
+                if await calls.count() > 1 { return songs }
+                if fails { throw URLError(.timedOut) }
+                return []
+            })
+            let station = RoomDJStation(source: catalog)
+            let playback = ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: url) })
+            let session = RoomViewingSession(playback: playback, djStation: station)
+            defer { session.close() }
+            station.playNow(seed)
+            try await djWait("the provider response") { station.message != nil }
+            XCTAssertEqual(station.canRetryRefill, fails)
+            for _ in 0..<4 {
+                station.fillIfLow()
+                try await Task.sleep(for: .milliseconds(30))
+            }
+            let item = try XCTUnwrap(playback.player.currentItem)
+            item.forwardPlaybackEndTime = playback.player.currentTime() + CMTime(seconds: 0.2, preferredTimescale: 600)
+            try await djWait("the recording to finish") { playback.phase == .finished && !station.isLoading }
+            let count = await calls.calls
+            XCTAssertEqual(count, 1)
+            XCTAssertTrue(station.upcoming.isEmpty)
+            station.retry()
+            if fails {
+                try await djWait("the recovered queue to resume playback") {
+                    session.video?.id == "pick-1" && session.canFillDJQueue && !station.isLoading
+                }
+                XCTAssertEqual(station.upcoming.map(\.id), ["pick-2", "pick-3", "pick-4"])
+            } else {
+                XCTAssertFalse(station.isLoading)
+            }
+            XCTAssertFalse(station.canRetryRefill)
+            let afterRetry = await calls.calls
+            XCTAssertEqual(afterRetry, fails ? 2 : 1)
+        }
+    }
+}
+
+extension ChannelPlaybackTests {
+    func testDJQueueRemovalsExcludeLateResultsAndStoredCandidatesWithoutDislikingThem() async throws {
+        let seed = djSong("seed", "Seed")
+        let request = djSong("request", "Requested next")
+        let head = djSong("head", "First quick pick")
+        let middle = djSong("middle", "Second quick pick")
+        let keep = djSong("keep", "Third quick pick")
+        let picks = (1...5).map { djSong("pick-\($0)", "Song \($0)") }
+        let gate = DJRequestGate()
+        let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { _, _ in
+            if await gate.count() == 1 { await gate.suspend() }
+            return [head, middle, request] + picks
+        })
+        let suite = "edited-dj-queue-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = RoomPlaylistStore(defaults: defaults)
+        let station = RoomDJStation(source: catalog, defaults: defaults)
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let playback = ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: url) })
+        let session = RoomViewingSession(playback: playback, djStation: station)
+        defer { session.close() }
+        station.playNow(seed)
+        station.steer(toward: request)
+        try await djWait("the catalog refill to start") { await gate.waiting }
+        let original = try XCTUnwrap(playback.player.currentItem)
+        for song in [head, middle, keep] { session.addToQuickPlaylist(song, seconds: nil, store: store) }
+        XCTAssertEqual(station.upcoming.map(\.id), ["head", "middle", "keep", "request"])
+        for song in [middle, request] { station.removeUpcoming(song) }
+        XCTAssertNil(station.requestedNext)
+        XCTAssertEqual(station.upcoming.map(\.id), ["head", "keep"])
+        await gate.release()
+        try await djWait("the stale provider response") { !station.isLoading }
+        XCTAssertEqual(station.upcoming.map(\.id), ["head", "keep"])
+        station.removeUpcoming(head)
+        XCTAssertEqual(station.upcoming.map(\.id), ["keep"])
+        station.fillIfLow()
+        XCTAssertEqual(station.upcoming.map(\.id), ["keep", "pick-1", "pick-2"])
+        session.addToQuickPlaylist(picks[2], seconds: nil, store: store)
+        XCTAssertEqual(station.upcoming.map(\.id), ["keep", "pick-3", "pick-1", "pick-2"])
+        station.removeUpcoming(picks[2])
+        XCTAssertTrue(original === playback.player.currentItem)
+        for song in [middle, request, head, picks[2]] { XCTAssertNil(station.feedback(for: song)) }
+        session.advance()
+        try await djWait("the first surviving quick pick") { session.video?.id == "keep" && session.canFillDJQueue }
+        session.advance()
+        try await djWait("the next top-up from the stored songs") { session.video?.id == "pick-1" && session.canFillDJQueue }
+        XCTAssertEqual(station.upcoming.map(\.id), ["pick-2", "pick-4", "pick-5"])
+        let count = await gate.calls
+        XCTAssertEqual(count, 1)
+        session.close()
+        station.playNow(seed)
+        try await djWait("a new station to allow previously removed songs") { session.next?.id == head.id }
+    }
+
+    func testDJRemovingAFadingHeadRestoresTheCurrentItemAndAdvancesToTheSurvivor() async throws {
+        let seed = djSong("seed", "Seed")
+        let head = djSong("head", "Fading track")
+        let next = djSong("next", "Next remaining track")
+        let catalog = DJFixtureCatalog(searchResults: { _ in [] }, recommendations: { _, _ in [head, next] })
+        let url = try djAudioFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let playback = ChannelPlayback(itemResolver: { _ in AVPlayerItem(url: url) })
+        playback.configureOverlap(seconds: 2)
+        let station = RoomDJStation(source: catalog)
+        let session = RoomViewingSession(playback: playback, djStation: station)
+        defer { session.close() }
+        var started = [String]()
+        session.onVideoStarted = { started.append($0.id) }
+        station.playNow(seed)
+        try await djWait("both recordings to be ready") { playback.incomingPlayer?.currentItem?.status == .readyToPlay }
+        let player = playback.player
+        let item = try XCTUnwrap(player.currentItem)
+        let incoming = try XCTUnwrap(playback.incomingPlayer)
+        item.forwardPlaybackEndTime = player.currentTime() + CMTime(seconds: 0.8, preferredTimescale: 600)
+        try await djWait("the outgoing and incoming recordings to overlap") { incoming.rate > 0 && player.volume < 1 }
+        station.removeUpcoming(head)
+        XCTAssertTrue(playback.player === player)
+        XCTAssertTrue(player.currentItem === item)
+        XCTAssertEqual(player.volume, 1, accuracy: 0.01)
+        XCTAssertNil(incoming.currentItem)
+        XCTAssertEqual(session.next?.id, next.id)
+        try await djWait("a natural handoff to the surviving queue head") { started.count == 2 }
+        station.removeUpcoming(next) // A late press from the old queue row.
+        XCTAssertEqual(session.video?.id, next.id)
+        XCTAssertEqual(started, [seed.id, next.id])
+        XCTAssertFalse(station.upcoming.contains { $0.id == head.id })
     }
 }

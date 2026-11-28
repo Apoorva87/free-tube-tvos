@@ -1,6 +1,10 @@
 import AVFoundation
 import SwiftUI
 
+extension EnvironmentValues {
+    @Entry var removeFromDJQueue: (@MainActor (ChannelVideo) -> Void)? = nil
+}
+
 struct RoomDJView: View {
     @Environment(RoomViewingSession.self) private var viewing
     let history: [ChannelVideo]
@@ -12,6 +16,8 @@ struct RoomDJView: View {
 
     @State private var query = ""
     @State private var pick: ChannelVideo?
+    @State private var removedPosition: Int?
+    @State private var restoringFromContextMenu = false
     @State private var selectingMode = false
     @State private var selectingLanguage = false
     @State private var handoffFailed = false
@@ -68,6 +74,10 @@ struct RoomDJView: View {
                                 .buttonStyle(RoomToolbarStyle()).disabled(tick.date < deadline)
                                 .accessibilityIdentifier("dj-retry")
                         }
+                    } else if station.canRetryRefill {
+                        Button("Retry songs") { station.retry() }
+                            .buttonStyle(RoomToolbarStyle())
+                            .accessibilityIdentifier("dj-retry-refill")
                     }
                 }
                 if let song = station.songAwaitingRetry {
@@ -117,7 +127,14 @@ struct RoomDJView: View {
         .onReceive(viewing.playback.player.publisher(for: \.timeControlStatus).receive(on: RunLoop.main)) {
             transportStatus = $0
         }
-        .sheet(item: $pick) { video in songActions(video) }
+        .sheet(item: $pick, onDismiss: restoreQueueFocus) { video in songActions(video) }
+        .onReceive(NotificationCenter.default.publisher(for: UIFocusSystem.didUpdateNotification)) { update in
+            // The tile hosting the context menu is gone. Restore focus once tvOS has
+            // returned it to the app, after the menu's own dismissal animation.
+            if restoringFromContextMenu, (update.object as? UIFocusSystem)?.focusedItem != nil {
+                restoreQueueFocus()
+            }
+        }
         .sheet(isPresented: $selectingLanguage) {
             VStack(alignment: .leading, spacing: 22) {
                 RoomShelfTitle(title: "Song language")
@@ -258,7 +275,8 @@ struct RoomDJView: View {
 
     private func shelf(_ title: String, id: String, songs: [ChannelVideo],
                        select: @escaping (ChannelVideo) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        let remove: (@MainActor (ChannelVideo) -> Void)? = id == "upcoming" ? removeQueuedSong : nil
+        return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 16) {
                 RoomShelfTitle(title: title)
                 if id == "upcoming", let requested = station.requestedNext {
@@ -273,14 +291,16 @@ struct RoomDJView: View {
             }
             RoomVideoShelf(videos: songs, focus: focus, discoveryShelfID: "dj-" + id,
                            columns: viewing.presentation == .mini ? 3 : 5, openMenu: openMenu, action: select)
+                .environment(\.removeFromDJQueue, remove)
         }
     }
 
     private func songActions(_ video: ChannelVideo) -> some View {
-        VStack(alignment: .leading, spacing: 22) {
+        let isQueued = station.upcoming.contains { $0.id == video.id }
+        return VStack(alignment: .leading, spacing: 22) {
             RoomShelfTitle(title: video.title)
             Text(video.channelTitle).font(.headline).foregroundStyle(RoomPalette.muted)
-            if !station.upcoming.isEmpty {
+            if !isQueued && !station.upcoming.isEmpty {
                 Text("Current queue").font(.headline).foregroundStyle(RoomPalette.muted)
                 ForEach(station.upcoming.prefix(2)) { song in
                     Label(song.title, systemImage: "music.note").font(.system(size: 22)).lineLimit(1)
@@ -291,6 +311,12 @@ struct RoomDJView: View {
                 station.playNow(video)
             }
             .accessibilityIdentifier("dj-play-now")
+            if isQueued {
+                Button {
+                    removeQueuedSong(video)
+                } label: { Label("Remove from Up Next", systemImage: "minus.circle") }
+                .accessibilityIdentifier("dj-remove-upcoming")
+            }
             Button("Queue after current song") {
                 pick = nil
                 if station.choices.contains(where: { $0.id == video.id }) { station.choose(video) }
@@ -302,6 +328,25 @@ struct RoomDJView: View {
             Button("Done") { pick = nil }
         }
         .frame(maxWidth: 920, alignment: .leading).padding(46)
+    }
+
+    private func removeQueuedSong(_ video: ChannelVideo) {
+        guard let index = station.upcoming.firstIndex(where: { $0.id == video.id }) else { return }
+        removedPosition = index
+        restoringFromContextMenu = pick == nil
+        station.removeUpcoming(video)
+        if pick != nil { pick = nil }
+    }
+
+    private func restoreQueueFocus() {
+        guard let position = removedPosition else { return }
+        removedPosition = nil
+        restoringFromContextMenu = false
+        Task { @MainActor in
+            await Task.yield()
+            let songs = station.upcoming
+            focus.wrappedValue = songs.isEmpty ? .djSearch : .video(songs[min(position, songs.count - 1)].id, in: "dj-upcoming")
+        }
     }
 
     private func submit() {

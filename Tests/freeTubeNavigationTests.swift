@@ -241,6 +241,14 @@ final class freeTubeNavigationTests: XCTestCase {
         XCTAssertTrue(app.buttons["mini-expand"].exists)
         capture("DJ Mode - Gulabi Sadi and Marathi up next")
 
+        let queuedID = upcoming.firstMatch.identifier
+        selectWithRemote(app.buttons[queuedID], in: app)
+        let remove = app.buttons["dj-remove-upcoming"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        selectWithRemote(remove, in: app)
+        XCTAssertTrue(app.buttons[queuedID].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(now.exists)
+
         selectWithRemote(field, in: app)
         app.typeText("more Marathi wedding songs\n")
         let direction = app.staticTexts["dj-direction"]

@@ -16,6 +16,8 @@
 		BD913DE9702F4E7DD9CB94A1 /* PublicVideoStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23791368F704B7B338339444 /* PublicVideoStream.swift */; };
 		DB46120A50E8E292B9D10CA1 /* RoomPlaylistTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89E0A96AF307350EB4E4BA11 /* RoomPlaylistTests.swift */; };
 		28D9F655D59D59A59620F235 /* RoomDJCooldownTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43FE0131C8D359FB81463601 /* RoomDJCooldownTests.swift */; };
+		01E981FAA8D1ACFB2AF2F137 /* RoomVideoScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CAD328B18E9746C9B93BC2E /* RoomVideoScannerTests.swift */; };
+		2A65C9B236A94DB0AB3E9D11 /* RoomScrubFramesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48AC4FB1AACF4F119D423D56 /* RoomScrubFramesTests.swift */; };
 		6602C8EB8FC2592489280C93 /* RoomDJSongCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38042D1EC2465B6FAEC11941 /* RoomDJSongCacheTests.swift */; };
 		E8FF7037932DCA74F2780F14 /* RoomCategoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A39B4FC08EF04643290B9088 /* RoomCategoryTests.swift */; };
 /* End PBXBuildFile section */
@@ -47,6 +49,8 @@
 		89E0A96AF307350EB4E4BA11 /* RoomPlaylistTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlaylistTests.swift; sourceTree = "<group>"; };
 		9D6EEFE9D4A64C93AF296801 /* freeTubePlaybackTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = freeTubePlaybackTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		43FE0131C8D359FB81463601 /* RoomDJCooldownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomDJCooldownTests.swift; sourceTree = "<group>"; };
+		7CAD328B18E9746C9B93BC2E /* RoomVideoScannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomVideoScannerTests.swift; sourceTree = "<group>"; };
+		48AC4FB1AACF4F119D423D56 /* RoomScrubFramesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomScrubFramesTests.swift; sourceTree = "<group>"; };
 		38042D1EC2465B6FAEC11941 /* RoomDJSongCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomDJSongCacheTests.swift; sourceTree = "<group>"; };
 		A39B4FC08EF04643290B9088 /* RoomCategoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomCategoryTests.swift; sourceTree = "<group>"; };
 		C479E55380192DF805ED494D /* Build.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Build.xcconfig; sourceTree = "<group>"; };
@@ -101,6 +105,8 @@
 				E788CFEB10E78F1D2D96F994 /* ChannelPlaybackTests.swift */,
 				DB1D85373A92DEC6F101DDE9 /* RoomAIValidationTests.swift */,
 				43FE0131C8D359FB81463601 /* RoomDJCooldownTests.swift */,
+				7CAD328B18E9746C9B93BC2E /* RoomVideoScannerTests.swift */,
+				48AC4FB1AACF4F119D423D56 /* RoomScrubFramesTests.swift */,
 				38042D1EC2465B6FAEC11941 /* RoomDJSongCacheTests.swift */,
 				A39B4FC08EF04643290B9088 /* RoomCategoryTests.swift */,
 				58A1FC35CAFC790ED843A9D0 /* RoomDiscoveryTests.swift */,
@@ -255,6 +261,8 @@
 				05904D07125CFE60145B960B /* ChannelPlaybackTests.swift in Sources */,
 				19C1F6B106B9725BF305725D /* RoomAIValidationTests.swift in Sources */,
 				28D9F655D59D59A59620F235 /* RoomDJCooldownTests.swift in Sources */,
+				01E981FAA8D1ACFB2AF2F137 /* RoomVideoScannerTests.swift in Sources */,
+				2A65C9B236A94DB0AB3E9D11 /* RoomScrubFramesTests.swift in Sources */,
 				6602C8EB8FC2592489280C93 /* RoomDJSongCacheTests.swift in Sources */,
 				E8FF7037932DCA74F2780F14 /* RoomCategoryTests.swift in Sources */,
 				4320009B82A7D19573A3726A /* RoomDiscoveryTests.swift in Sources */,
@@ -416,7 +424,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 33;
+				CURRENT_PROJECT_VERSION = 34;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -482,7 +490,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 33;
+				CURRENT_PROJECT_VERSION = 34;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

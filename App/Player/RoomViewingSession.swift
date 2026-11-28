@@ -84,6 +84,23 @@ final class RoomViewingSession {
         resumeDJQueue()
     }
 
+    func appendDJUpcoming(_ videos: [ChannelVideo]) {
+        queue.append(contentsOf: videos)
+        resumeDJQueue()
+    }
+
+    func removeDJUpcoming(id: String) {
+        let start = index + 1
+        guard let position = queue[start...].firstIndex(where: { $0.id == id }) else { return }
+        if position == start, djTrackStarted || djPreparationID == id {
+            // A handoff in progress owns its previous head until the new track starts.
+            cancelDJPreparation(discardItem: true)
+        }
+        if position < start + quickCount { quickCount -= 1 }
+        queue.remove(at: position)
+        resumeDJQueue()
+    }
+
     private func cancelDJPreparation(discardItem: Bool) {
         delayedDJPreparation?.cancel()
         delayedDJPreparation = nil
@@ -227,6 +244,10 @@ final class RoomViewingSession {
         selectedDJTrackID = nil
         if quickCount > 0 { quickCount -= 1 }
         index += 1
+        if djStation.isActive {
+            queue.removeFirst(index)
+            index = 0
+        }
         beginPlayback(usePrepared: true)
     }
 
